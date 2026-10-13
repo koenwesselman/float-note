@@ -94,6 +94,13 @@ npm run build
 
 ## Versioning & releases
 
+**No release ships without Koen's explicit approval, every time.** Approval for one release, or for the change that goes into it, is not approval to ship. Prepare the release and stop. Ask before any step that starts or publishes one:
+
+- bumping the version (`npm version` commits and tags in one step);
+- pushing a version tag - it starts `.github/workflows/release.yml`, which builds and creates the GitHub release;
+- publishing a draft release, or creating or editing a release by hand;
+- submitting or updating the plugin in the community directory, or changing the repository's visibility.
+
 - Bump `version` in `manifest.json` (SemVer) and update `versions.json` to map plugin version → minimum app version.
 - Create a GitHub release whose tag exactly matches `manifest.json`'s `version`. Do not use a leading `v`.
 - Attach `manifest.json`, `main.js`, and `styles.css` (if present) to the release as individual assets.
@@ -154,6 +161,7 @@ Follow Obsidian's **Developer Policies** and **Plugin Guidelines**. In particula
 
 **Don't**
 
+- Bump the version, push a tag or publish a release without Koen's explicit approval for that release - see **Versioning & releases**.
 - Introduce network calls without an obvious user-facing reason and documentation.
 - Ship features that require cloud services without clear disclosure and explicit opt-in.
 - Store or transmit vault contents unless essential and consented.

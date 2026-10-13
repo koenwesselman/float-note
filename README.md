@@ -12,7 +12,7 @@ Use it to keep a checklist, meeting notes or a scratchpad in view while you work
 
 In Obsidian, open **Settings → Community plugins → Browse**, search for **Float Note**, then select **Install** and **Enable**.
 
-To install by hand, download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/koenwesselman/float-note/releases/latest), put them in `<vault>/.obsidian/plugins/float-note/`, then reload Obsidian and enable **Float Note** under **Settings → Community plugins**.
+To install by hand, download `main.js` and `manifest.json` from the [latest release](https://github.com/koenwesselman/float-note/releases/latest), put them in `<vault>/.obsidian/plugins/float-note/`, then reload Obsidian and enable **Float Note** under **Settings → Community plugins**.
 
 ## Use
 
@@ -87,7 +87,7 @@ npm install
 npm run build
 ```
 
-Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/float-note/`, then reload Obsidian. Run `npm run lint` before committing.
+Copy `main.js` and `manifest.json` into `<vault>/.obsidian/plugins/float-note/`, then reload Obsidian. Run `npm run lint` before committing.
 
 ## Support
 

@@ -1,4 +1,3 @@
-import { pathToFileURL } from 'url';
 import { App, Component, MarkdownRenderer, TFile, setIcon } from 'obsidian';
 
 /**
@@ -66,6 +65,11 @@ a { cursor: default; }
 	return { srcdoc, htmlBytes: html.length, cssBytes: css.length, imagesRewritten };
 }
 
+/** A file:// URL for an absolute macOS path, every segment escaped - `%`, `#` and `?` included. */
+function fileUrl(path: string): string {
+	return 'file://' + path.split('/').map(encodeURIComponent).join('/');
+}
+
 /**
  * Obsidian serves vault files at `app://<id>/<absolute path>`, a scheme only
  * its own windows resolve. The panel page is loaded from a file:// URL, so the
@@ -79,7 +83,7 @@ function rewriteImages(root: HTMLElement): number {
 		if (!src?.startsWith('app://')) continue;
 		try {
 			const path = decodeURIComponent(new URL(src).pathname);
-			img.setAttribute('src', pathToFileURL(path).href);
+			img.setAttribute('src', fileUrl(path));
 			count++;
 		} catch {
 			// Left as it was: the alt text shows, as before.

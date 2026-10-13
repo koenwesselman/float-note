@@ -49,8 +49,10 @@ interface Remote {
  */
 function remote(): Remote | null {
 	try {
-		// eslint-disable-next-line @typescript-eslint/no-require-imports -- electron is external and only reachable at runtime
-		return (require('electron') as { remote?: Remote }).remote ?? null;
+		// Obsidian's renderer puts Node's require on window. Typed here rather
+		// than through @types/node, which the community review does not load.
+		const nodeRequire = (window as unknown as { require?: (id: string) => unknown }).require;
+		return (nodeRequire?.('electron') as { remote?: Remote } | undefined)?.remote ?? null;
 	} catch {
 		return null;
 	}
