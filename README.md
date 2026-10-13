@@ -49,7 +49,7 @@ There is no Live Preview. The panel is a separate window outside Obsidian's work
 - **View is read-only.** Links and checkboxes do nothing, and content that other plugins draw slowly, such as Dataview or Tasks queries, may be missing.
 - **Obsidian's hotkeys only work while Obsidian is the frontmost app.** To bring the panel up from inside another app, switch to Obsidian first.
 - **The panel does not reopen after Obsidian restarts.**
-- **Tested on macOS 27 with Obsidian 1.14.4 (Electron 37.6.0).**
+- **Tested on macOS 27 with Obsidian 1.14.4, installer 1.9.14 (Electron 37.6.0).** The panel depends on Electron, which comes with the Obsidian installer, not with Obsidian's automatic updates. If the panel misbehaves, check **Settings → General**: when it shows an installer version older than 1.9.14, download the current installer from [obsidian.md](https://obsidian.md/download).
 
 ## Files and privacy
 
@@ -91,9 +91,7 @@ Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins
 
 ## Support
 
-If Float Note is useful to you, you can buy me a coffee.
-
-<a href="https://buymeacoffee.com/koenwesselman"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60"></a>
+If Float Note is useful to you, you can [buy me a coffee](https://buymeacoffee.com/koenwesselman).
 
 ## Licence
 
