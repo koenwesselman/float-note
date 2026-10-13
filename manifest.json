@@ -1,7 +1,7 @@
 {
 	"id": "float-note",
 	"name": "Float Note",
-	"version": "0.7.1",
+	"version": "0.7.2",
 	"minAppVersion": "1.14.4",
 	"description": "Pop the current note into a small always-on-top window that stays visible across Spaces, over full-screen apps and across displays (macOS).",
 	"author": "Koen Wesselman",
