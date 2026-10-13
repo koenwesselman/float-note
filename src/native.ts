@@ -33,20 +33,12 @@ export interface Bounds {
 	height: number;
 }
 
-type ActivationPolicy = 'regular' | 'accessory';
-
-interface RemoteApp {
-	setActivationPolicy?(policy: ActivationPolicy): void;
-	dock?: { show(): Promise<void>; isVisible(): boolean };
-}
-
 interface RemoteBrowserWindow {
 	new (options: Record<string, unknown>): NativeWindow;
 	getAllWindows(): NativeWindow[];
 }
 
 interface Remote {
-	app?: RemoteApp;
 	BrowserWindow?: RemoteBrowserWindow;
 	screen?: { getAllDisplays(): { workArea: Bounds }[] };
 }
@@ -102,33 +94,4 @@ export function safe<T>(fn: () => T, fallback: T): T {
 	} catch {
 		return fallback;
 	}
-}
-
-/**
- * `[NSApp setActivationPolicy:]`, the AppKit route. Electron's own Dock
- * hide/show goes through the deprecated Carbon `TransformProcessType` instead.
- */
-export function setActivationPolicy(policy: ActivationPolicy): void {
-	try {
-		remote()?.app?.setActivationPolicy?.(policy);
-	} catch (e) {
-		console.error(`Float Note: setActivationPolicy('${policy}') failed`, e);
-	}
-}
-
-/** Put Obsidian back in the Dock and Cmd+Tab, by both routes. */
-export function restoreDock(): void {
-	setActivationPolicy('regular');
-	try {
-		remote()
-			?.app?.dock?.show()
-			.catch((e) => console.error('Float Note: dock.show failed', e));
-	} catch (e) {
-		console.error('Float Note: dock.show failed', e);
-	}
-}
-
-/** True when the activation policy is regular - Electron's `app.dock.isVisible()`. */
-export function dockIsVisible(): boolean | null {
-	return safe(() => remote()?.app?.dock?.isVisible() ?? null, null);
 }

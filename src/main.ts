@@ -1,5 +1,5 @@
 import { Notice, Plugin, TAbstractFile, TFile } from 'obsidian';
-import { Bounds, dockIsVisible, restoreDock } from './native';
+import type { Bounds } from './native';
 import { FloatPanel, sweepOrphanPanels, writePanelPage } from './panel';
 import { DEFAULT_SETTINGS, FloatNoteSettings, FloatNoteSettingTab } from './settings';
 import { buildViewDocument } from './view';
@@ -69,19 +69,6 @@ export default class FloatNotePlugin extends Plugin {
 				if (!this.panel) return false;
 				if (!checking) void this.panel.toggleMode();
 				return true;
-			},
-		});
-
-		// Escape hatch, kept from Phase 1: closes the panel and forces the
-		// regular activation policy.
-		this.addCommand({
-			id: 'restore-dock-icon',
-			name: 'Restore Dock icon',
-			callback: async () => {
-				await this.closePanel();
-				restoreDock();
-				this.log('restore-dock-command');
-				window.setTimeout(() => this.log('restore-dock-command+2.5s'), 2500);
 			},
 		});
 
@@ -295,9 +282,6 @@ export default class FloatNotePlugin extends Plugin {
 			const line = JSON.stringify({
 				at: new Date().toISOString(),
 				event,
-				method: this.settings.fullScreenMethod,
-				level: this.settings.level,
-				dockVisible: dockIsVisible(),
 				...extra,
 				window: this.panel?.snapshot() ?? null,
 			});
@@ -310,9 +294,10 @@ export default class FloatNotePlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		const data = ((await this.loadData()) ?? {}) as Partial<FloatNoteSettings> & { skipTransformProcessType?: boolean };
-		// 0.1.0's boolean, superseded by fullScreenMethod.
-		delete data.skipTransformProcessType;
+		const data = ((await this.loadData()) ?? {}) as Partial<FloatNoteSettings> & Record<string, unknown>;
+		// Settings from earlier versions, for working out what a panel needed:
+		// a panel needs none of them (0.6.0).
+		for (const key of ['skipTransformProcessType', 'fullScreenMethod', 'level']) delete data[key];
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
 	}
 

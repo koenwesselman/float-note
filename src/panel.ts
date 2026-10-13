@@ -2,10 +2,11 @@ import { mkdirSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import editorScript from 'virtual:panel-editor';
-import { Log, WindowFlags } from './flags';
 import { Bounds, NativeWindow, createWindow, isAlive, onSomeDisplay, safe, windowsTitled } from './native';
 import type { CloseSource, LoadArgs, PollResult, Theme } from './panel-editor';
 import type { FloatNoteSettings } from './settings';
+
+export type Log = (event: string, extra?: Record<string, unknown>) => void;
 
 /**
  * The page title doubles as the marker for finding panels this plugin no
@@ -60,7 +61,6 @@ export function writePanelPage(version: string): string {
  * polling, so there is no callback for a reload to leave dangling.
  */
 export class FloatPanel {
-	private readonly flags: WindowFlags;
 	private timers: number[] = [];
 	private pollTimer: number | null = null;
 	private inflight: Promise<void> | null = null;
@@ -70,12 +70,9 @@ export class FloatPanel {
 
 	private constructor(
 		private readonly native: NativeWindow,
-		settings: () => FloatNoteSettings,
 		private readonly log: Log,
 		private readonly events: PanelEvents,
-	) {
-		this.flags = new WindowFlags(native, settings, log);
-	}
+	) {}
 
 	static async open(
 		pagePath: string,
@@ -111,9 +108,9 @@ export class FloatPanel {
 			title: PANEL_TITLE,
 			webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false },
 		});
-		const panel = new FloatPanel(native, settings, log, events);
+		const panel = new FloatPanel(native, log, events);
 		// Flags first, while hidden, so the window is ordered in with them.
-		panel.flags.apply(true);
+		panel.applyFlags();
 		panel.setOpacity(settings().opacity);
 		panel.lastBounds = safe(() => native.getBounds(), null);
 		await native.loadFile(pagePath);
@@ -162,10 +159,6 @@ export class FloatPanel {
 		return result?.text ?? null;
 	}
 
-	reapply(): void {
-		this.flags.apply(false);
-	}
-
 	setOpacity(opacity: number): void {
 		if (this.isAlive()) safe(() => this.native.setOpacity(Math.min(1, Math.max(0.5, opacity))), undefined);
 	}
@@ -186,22 +179,41 @@ export class FloatPanel {
 		this.log('panel-shown');
 	}
 
-	syncMethod(): void {
-		this.flags.syncMethod();
-	}
-
-	/** Restore the Dock first, then destroy the window. Idempotent; does not save. */
+	/** Destroy the window. Idempotent; does not save. */
 	close(): void {
 		this.stopPolling();
 		for (const id of this.timers) window.clearTimeout(id);
 		this.timers = [];
-		this.flags.release();
 		if (this.isAlive()) safe(() => this.native.destroy(), undefined);
 		this.log('panel-closed');
 	}
 
+	/** State for the debug log. Never throws. */
 	snapshot(): Record<string, unknown> {
-		return this.flags.snapshot();
+		if (!this.isAlive()) return { alive: false };
+		return {
+			alive: true,
+			visible: safe(() => this.native.isVisible(), null),
+			allWorkspaces: safe(() => this.native.isVisibleOnAllWorkspaces(), null),
+			alwaysOnTop: safe(() => this.native.isAlwaysOnTop(), null),
+		};
+	}
+
+	/**
+	 * On every Space, including other apps' full-screen ones, above ordinary
+	 * windows. Because this is an NSPanel, that needs no change to Obsidian's
+	 * place in the Dock: skipTransformProcessType keeps Electron from hiding it.
+	 * 'floating' is the level Tot uses - below menus and notifications.
+	 */
+	private applyFlags(): void {
+		if (!this.isAlive()) return;
+		try {
+			this.native.setFullScreenable(false);
+			this.native.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
+			this.native.setAlwaysOnTop(true, 'floating');
+		} catch (e) {
+			console.error('Float Note: could not apply window flags', e);
+		}
 	}
 
 	private tick(): void {
@@ -243,8 +255,8 @@ export class FloatPanel {
 	private present(): void {
 		if (!this.isAlive()) return;
 		safe(() => this.native.show(), undefined);
-		this.flags.apply(true);
-		for (const ms of REAPPLY_DELAYS_MS) this.timers.push(window.setTimeout(() => this.reapply(), ms));
+		this.applyFlags();
+		for (const ms of REAPPLY_DELAYS_MS) this.timers.push(window.setTimeout(() => this.applyFlags(), ms));
 	}
 
 	private async load(content: PanelContent, theme: Theme): Promise<void> {
