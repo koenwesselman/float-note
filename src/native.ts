@@ -1,0 +1,134 @@
+/**
+ * The slice of Electron's BrowserWindow this plugin calls. The object is a
+ * proxy from @electron/remote, so every call is a synchronous IPC round trip
+ * to the main process - and any of them can throw once the window is closing.
+ */
+export interface NativeWindow {
+	isDestroyed(): boolean;
+	isVisible(): boolean;
+	show(): void;
+	showInactive(): void;
+	hide(): void;
+	getBounds(): Bounds;
+	setOpacity(opacity: number): void;
+	destroy(): void;
+	getTitle(): string;
+	loadURL(url: string): Promise<void>;
+	loadFile(path: string): Promise<void>;
+	readonly webContents: { executeJavaScript(code: string): Promise<unknown> };
+	setFullScreenable(fullscreenable: boolean): void;
+	setVisibleOnAllWorkspaces(
+		visible: boolean,
+		options?: { visibleOnFullScreen?: boolean; skipTransformProcessType?: boolean },
+	): void;
+	isVisibleOnAllWorkspaces(): boolean;
+	setAlwaysOnTop(flag: boolean, level?: string): void;
+	isAlwaysOnTop(): boolean;
+}
+
+export interface Bounds {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+type ActivationPolicy = 'regular' | 'accessory';
+
+interface RemoteApp {
+	setActivationPolicy?(policy: ActivationPolicy): void;
+	dock?: { show(): Promise<void>; isVisible(): boolean };
+}
+
+interface RemoteBrowserWindow {
+	new (options: Record<string, unknown>): NativeWindow;
+	getAllWindows(): NativeWindow[];
+}
+
+interface Remote {
+	app?: RemoteApp;
+	BrowserWindow?: RemoteBrowserWindow;
+	screen?: { getAllDisplays(): { workArea: Bounds }[] };
+}
+
+/**
+ * `require('electron').remote` exists only because Obsidian assigns
+ * `@electron/remote` to it at start-up; Electron itself removed it in v14.
+ */
+function remote(): Remote | null {
+	try {
+		// eslint-disable-next-line @typescript-eslint/no-require-imports -- electron is external and only reachable at runtime
+		return (require('electron') as { remote?: Remote }).remote ?? null;
+	} catch {
+		return null;
+	}
+}
+
+/** A new window in Electron's main process. Throws if remote is unavailable. */
+export function createWindow(options: Record<string, unknown>): NativeWindow {
+	const BrowserWindow = remote()?.BrowserWindow;
+	if (!BrowserWindow) throw new Error('@electron/remote BrowserWindow is not available');
+	return new BrowserWindow(options);
+}
+
+/**
+ * Whether at least a grabbable corner of these bounds - 60 x 40 px - is on a
+ * connected display. A window remembered on a display since unplugged would
+ * otherwise reopen somewhere nobody can reach it.
+ */
+export function onSomeDisplay(bounds: Bounds): boolean {
+	const displays = safe(() => remote()?.screen?.getAllDisplays() ?? [], []);
+	return displays.some(({ workArea: a }) => {
+		const overlapX = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x);
+		const overlapY = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y);
+		return overlapX >= 60 && overlapY >= 40;
+	});
+}
+
+/** Every live main-process window with this title. */
+export function windowsTitled(title: string): NativeWindow[] {
+	const all = remote()?.BrowserWindow?.getAllWindows() ?? [];
+	return all.filter((w) => isAlive(w) && safe(() => w.getTitle(), '') === title);
+}
+
+/** isDestroyed() that never throws: a window that cannot answer is treated as gone. */
+export function isAlive(w: NativeWindow): boolean {
+	return safe(() => !w.isDestroyed(), false);
+}
+
+export function safe<T>(fn: () => T, fallback: T): T {
+	try {
+		return fn();
+	} catch {
+		return fallback;
+	}
+}
+
+/**
+ * `[NSApp setActivationPolicy:]`, the AppKit route. Electron's own Dock
+ * hide/show goes through the deprecated Carbon `TransformProcessType` instead.
+ */
+export function setActivationPolicy(policy: ActivationPolicy): void {
+	try {
+		remote()?.app?.setActivationPolicy?.(policy);
+	} catch (e) {
+		console.error(`Float Note: setActivationPolicy('${policy}') failed`, e);
+	}
+}
+
+/** Put Obsidian back in the Dock and Cmd+Tab, by both routes. */
+export function restoreDock(): void {
+	setActivationPolicy('regular');
+	try {
+		remote()
+			?.app?.dock?.show()
+			.catch((e) => console.error('Float Note: dock.show failed', e));
+	} catch (e) {
+		console.error('Float Note: dock.show failed', e);
+	}
+}
+
+/** True when the activation policy is regular - Electron's `app.dock.isVisible()`. */
+export function dockIsVisible(): boolean | null {
+	return safe(() => remote()?.app?.dock?.isVisible() ?? null, null);
+}
