@@ -38,6 +38,26 @@ There is no Live Preview. Obsidian's own cannot run in the panel, which is a sep
 
 The panel's size and position are remembered between uses; a position on a display that is no longer connected falls back to the centre of the screen.
 
+## Limits and Dependencies
+
+Float Note relies on parts of Obsidian and Electron that are not public, stable plugin API. Any of them can change in an Obsidian update:
+
+- **`require('electron').remote`.** Electron removed `remote` in v14. It works only because Obsidian assigns `@electron/remote` to it at start-up. Without it the plugin cannot create its window at all.
+- **Electron's `type: 'panel'` window.** On macOS this is what lets the panel float over full-screen apps with Obsidian still in the Dock. An ordinary window cannot do that. 0.5.0 in this repository's history has code that takes Obsidian out of the Dock instead, if it is ever needed.
+- **`MarkdownRenderer.render`** is public API, but what View shows depends on what it produces. A few things are then patched in the copied output: callout icons, `app://` image paths, and the `contain: strict` Obsidian puts on `body`.
+- **Obsidian's CSS class names** (`.markdown-source-view`, `.cm-strong`, `.cm-header-1`, `.cm-hmd-frontmatter` and others). Edit's colours are measured from a hidden copy of Obsidian's editor markup, so a theme follows automatically - but only while those classes exist.
+
+If an update breaks something, switch on **Debug log** and look at `debug.log` in the plugin folder. It records panel, view and close events, and what the View frame actually contains.
+
+Known limits:
+
+- **Quitting Obsidian (Cmd+Q) while typing in the panel can lose up to about a second of text.** Edits are saved after a short pause, and quitting cannot wait for a save.
+- **Edits made in the panel and somewhere else within that same second:** the panel's version wins.
+- **View is read-only.** Links and checkboxes do nothing, and content plugins draw asynchronously (Dataview, Tasks queries) may be missing.
+- **Obsidian's hotkeys only work while Obsidian is the frontmost app.** To summon the panel from inside another app, Obsidian has to be brought forward first.
+- **The panel is not reopened after Obsidian restarts.**
+- **macOS only.** Tested on macOS 27 with Obsidian 1.14.4 (Electron 37.6.0).
+
 ## How It Works
 
 Since macOS 10.14, an ordinary window cannot float over another app's full-screen Space, and Obsidian's popout windows are ordinary windows whose options a plugin cannot change. Float Note therefore creates its own window, through the `@electron/remote` module Obsidian exposes as `require('electron').remote`, of Electron's `type: 'panel'` - an `NSPanel`, the window type Tot uses - set to join every Space including full-screen ones, at the `floating` level. On macOS 27 that is enough: Obsidian keeps its Dock icon.
