@@ -1,67 +1,92 @@
 # Float Note
 
-A desktop-only Obsidian plugin for macOS that floats the current note in a small window which stays on top and stays visible when you switch Spaces, switch to another app's full-screen Space, or move between displays - like Tot's overlay, for a vault note.
+Float the note you are working on in a small window that stays on top of everything on your Mac. It stays visible when you switch Spaces, when another app goes full screen, and when you move between displays, like Tot's overlay but for a note in your vault.
 
-The plan, with every decision and test behind it, lives in the vault at `Plans/Completed/Float Note.md`.
+Use it to keep a checklist, meeting notes or a scratchpad in view while you work in another app, and to type straight into it.
+
+**macOS only.** Float Note needs window behaviour that only macOS has. On Windows and Linux its commands show a notice and do nothing.
 
 ## Install
 
-1. Build: `npm install && npm run build`.
-2. Create `<vault>/.obsidian/plugins/float-note/` and copy `main.js`, `manifest.json` and `styles.css` into it.
-3. In Obsidian: Settings → Community plugins → reload the list, then enable **Float Note**.
+In Obsidian, open **Settings → Community plugins → Browse**, search for **Float Note**, then select **Install** and **Enable**.
 
-After a rebuild, copy the files again and reload Obsidian ("Reload app without saving").
+To install by hand, download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/koenwesselman/float-note/releases/latest), put them in `<vault>/.obsidian/plugins/float-note/`, then reload Obsidian and enable **Float Note** under **Settings → Community plugins**.
 
-## Commands
+## Use
 
-Palette only - none has a default hotkey.
+Open a note and run **Float current note** from the command palette. The note opens in the floating panel. Drag the panel by its top strip, and resize it from any edge. It reopens where you left it.
 
-- **Float current note** - opens the active note in the panel, or retargets the open panel to it.
-- **Toggle float overlay** - hides or shows the panel, saving first; with no panel open, floats the current note.
-- **Toggle float view** - switches the panel between Edit and View when it does not have focus.
-- **Close float overlay** - saves and closes the panel.
+None of the commands has a default hotkey. To summon the panel quickly, assign one under **Settings → Hotkeys**.
 
-Inside the panel: **Cmd+E** switches between Edit and View, and **Esc**, **Cmd+W** or the **×** on the top strip close it. Drag it by the top strip.
+| Command | What it does |
+| --- | --- |
+| **Float current note** | Opens the active note in the panel, or switches the open panel to it. |
+| **Toggle float overlay** | Hides or shows the panel, saving first. With no panel open, floats the current note. |
+| **Toggle float view** | Switches the panel between Edit and View when the panel does not have focus. |
+| **Close float overlay** | Saves and closes the panel. |
+
+Inside the panel, **Cmd+E** switches between Edit and View. **Esc**, **Cmd+W** or the **×** on the top strip close it.
 
 ## Edit and View
 
-**Edit** is a small Markdown editor showing the source, with headings, bold, italic, code, links, quotes and frontmatter styled in your theme's colours. Edits are saved to the vault after a short pause, and changes made elsewhere - the main pane, the Linter, sync - appear in the panel unless it has unsaved edits of its own, in which case the panel's version wins.
+**Edit** shows the note's Markdown source, with headings, bold, italic, code, links, quotes and frontmatter styled in your theme's colours. What you type is saved to the vault after a short pause. Changes made elsewhere, in the main editor, by another plugin or by sync, appear in the panel, unless the panel has unsaved edits of its own. Then the panel's version wins.
 
-**View** shows the note as Obsidian renders it - callouts, tables, images and theme included - read-only: links and checkboxes do nothing there.
+**View** shows the note as Obsidian renders it, with callouts, tables, images and your theme. It is read-only: links and checkboxes do nothing there.
 
-There is no Live Preview. Obsidian's own cannot run in the panel, which is a separate window process with no Obsidian in it.
+There is no Live Preview. The panel is a separate window outside Obsidian's workspace, and Obsidian's editor cannot run in it.
 
 ## Settings
 
-- **Opacity** - 0.5 to 1.
-- **Debug log** - off by default; appends panel and view events to `debug.log` in the plugin folder, for diagnosing problems.
+- **Opacity**: how see-through the panel is, from 0.5 to 1.
+- **Debug log**: off by default. When on, panel and view events are appended to `debug.log` in the plugin folder, to help diagnose problems.
 
-The panel's size and position are remembered between uses; a position on a display that is no longer connected falls back to the centre of the screen.
-
-## Limits and Dependencies
-
-Float Note relies on parts of Obsidian and Electron that are not public, stable plugin API. Any of them can change in an Obsidian update:
-
-- **`require('electron').remote`.** Electron removed `remote` in v14. It works only because Obsidian assigns `@electron/remote` to it at start-up. Without it the plugin cannot create its window at all.
-- **Electron's `type: 'panel'` window.** On macOS this is what lets the panel float over full-screen apps with Obsidian still in the Dock. An ordinary window cannot do that. 0.5.0 in this repository's history has code that takes Obsidian out of the Dock instead, if it is ever needed.
-- **`MarkdownRenderer.render`** is public API, but what View shows depends on what it produces. A few things are then patched in the copied output: callout icons, `app://` image paths, and the `contain: strict` Obsidian puts on `body`.
-- **Obsidian's CSS class names** (`.markdown-source-view`, `.cm-strong`, `.cm-header-1`, `.cm-hmd-frontmatter` and others). Edit's colours are measured from a hidden copy of Obsidian's editor markup, so a theme follows automatically - but only while those classes exist.
-
-If an update breaks something, switch on **Debug log** and look at `debug.log` in the plugin folder. It records panel, view and close events, and what the View frame actually contains.
-
-Known limits:
+## Known limits
 
 - **Quitting Obsidian (Cmd+Q) while typing in the panel can lose up to about a second of text.** Edits are saved after a short pause, and quitting cannot wait for a save.
-- **Edits made in the panel and somewhere else within that same second:** the panel's version wins.
-- **View is read-only.** Links and checkboxes do nothing, and content plugins draw asynchronously (Dataview, Tasks queries) may be missing.
-- **Obsidian's hotkeys only work while Obsidian is the frontmost app.** To summon the panel from inside another app, Obsidian has to be brought forward first.
-- **The panel is not reopened after Obsidian restarts.**
-- **macOS only.** Tested on macOS 27 with Obsidian 1.14.4 (Electron 37.6.0).
+- **If the same note is edited in the panel and somewhere else within that second, the panel's version wins.**
+- **View is read-only.** Links and checkboxes do nothing, and content that other plugins draw slowly, such as Dataview or Tasks queries, may be missing.
+- **Obsidian's hotkeys only work while Obsidian is the frontmost app.** To bring the panel up from inside another app, switch to Obsidian first.
+- **The panel does not reopen after Obsidian restarts.**
+- **Tested on macOS 27 with Obsidian 1.14.4 (Electron 37.6.0).**
 
-## How It Works
+## Files and privacy
 
-Since macOS 10.14, an ordinary window cannot float over another app's full-screen Space, and Obsidian's popout windows are ordinary windows whose options a plugin cannot change. Float Note therefore creates its own window, through the `@electron/remote` module Obsidian exposes as `require('electron').remote`, of Electron's `type: 'panel'` - an `NSPanel`, the window type Tot uses - set to join every Space including full-screen ones, at the `floating` level. On macOS 27 that is enough: Obsidian keeps its Dock icon.
+Float Note makes no network requests and collects nothing.
 
-The panel lives in Electron's main process, outside Obsidian's workspace, so the plugin owns its lifecycle: it saves before closing, closes with Obsidian's main window and when the plugin unloads, and destroys any panel left behind by a crash the next time it loads. The page is sandboxed, with no Node access; the plugin talks to it with `executeJavaScript` and polls it for edits, so there is no callback to leak across a reload.
+It reads and writes only the note you float, and its own files in its plugin folder, `.obsidian/plugins/float-note/`:
 
-Earlier versions could also take Obsidian out of the Dock (needed by an ordinary window, and not by a panel). That code is in this repository's history at 0.5.0 if a future macOS needs it.
+- `data.json`: its settings and where the panel was last left.
+- `panel.html`: the panel's page, a static file holding the editor. The panel is a separate window and has to load its page from a file. It contains no note content.
+- With **Debug log** on, `debug.log` and `last-view.html`, the last note rendered in View.
+
+Nothing is written outside your vault, and uninstalling the plugin removes all of these files.
+
+## Dependencies on Obsidian internals
+
+Float Note relies on parts of Obsidian and Electron that are not public, stable plugin API, and any of them can change in an Obsidian update:
+
+- **`require('electron').remote`.** Electron removed `remote` in v14. It works only because Obsidian provides `@electron/remote` in its place. Without it the plugin cannot create its window at all.
+- **Electron's `type: 'panel'` window.** On macOS this is what lets the panel float over full-screen apps while Obsidian keeps its Dock icon. An ordinary window cannot do that.
+- **`MarkdownRenderer.render`** is public API, but what View shows depends on what it produces. A few things are then patched in the copied output: callout icons, `app://` image paths, and the `contain: strict` Obsidian puts on `body`.
+- **Obsidian's CSS class names** (`.markdown-source-view`, `.cm-strong`, `.cm-header-1`, `.cm-hmd-frontmatter` and others). Edit's colours are measured from a hidden copy of Obsidian's editor markup, so it follows your theme, but only while those classes exist.
+
+If an update breaks something, switch on **Debug log**, reproduce the problem and [open an issue](https://github.com/koenwesselman/float-note/issues) with the contents of `debug.log`. Check it first: it records panel, view and close events, and the note's file path.
+
+## How it works
+
+Since macOS 10.14, an ordinary window cannot float over another app's full-screen Space, and Obsidian's popout windows are ordinary windows whose options a plugin cannot change. Float Note therefore creates its own window, through the `@electron/remote` module Obsidian exposes as `require('electron').remote`. The window is of Electron's `type: 'panel'`, which is an `NSPanel` and the window type Tot uses, set to join every Space including full-screen ones, at the `floating` level.
+
+The panel lives in Electron's main process, outside Obsidian's workspace, so the plugin owns its lifecycle. It saves before closing, closes with Obsidian's main window and when the plugin unloads, and destroys any panel left behind by a crash the next time it loads. The page is sandboxed with no Node access. The plugin talks to it with `executeJavaScript` and polls it for edits, so there is no callback to leak across a reload.
+
+## Building from source
+
+```bash
+npm install
+npm run build
+```
+
+Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/float-note/`, then reload Obsidian. Run `npm run lint` before committing.
+
+## Licence
+
+[MIT](LICENSE).

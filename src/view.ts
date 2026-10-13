@@ -1,6 +1,3 @@
-import { writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { App, Component, MarkdownRenderer, TFile, setIcon } from 'obsidian';
 
@@ -26,7 +23,7 @@ export interface ViewDocument {
  * Obsidian's stylesheets and the body classes and inline variables that carry
  * the theme. Read-only by construction: nothing in the frame talks back.
  */
-export async function buildViewDocument(app: App, file: TFile, text: string, debug = false): Promise<ViewDocument> {
+export async function buildViewDocument(app: App, file: TFile, text: string, dumpPath: string | null = null): Promise<ViewDocument> {
 	// Attached, though hidden: some of what Obsidian draws - callout icons -
 	// is only filled in once the element is in a document with styles applied.
 	const host = document.body.createDiv();
@@ -46,7 +43,7 @@ export async function buildViewDocument(app: App, file: TFile, text: string, deb
 		host.remove();
 	}
 
-	if (debug) dumpHtml(html);
+	if (dumpPath) dumpHtml(app, dumpPath, html);
 	const css = await collectCss();
 	const body = document.body;
 	const srcdoc = `<!doctype html>
@@ -91,13 +88,10 @@ function rewriteImages(root: HTMLElement): number {
 	return count;
 }
 
-/** The last rendered HTML, for diagnosing what Obsidian produced. Debug log only. */
-function dumpHtml(html: string): void {
-	try {
-		writeFileSync(join(tmpdir(), 'obsidian-float-note', 'last-view.html'), html, 'utf8');
-	} catch {
-		// Diagnostics only.
-	}
+/** The last rendered HTML, beside debug.log, for diagnosing what Obsidian produced. Debug log only. */
+function dumpHtml(app: App, path: string, html: string): void {
+	// Diagnostics only: a failed write is not worth reporting.
+	app.vault.adapter.write(path, html).catch(() => undefined);
 }
 
 /**

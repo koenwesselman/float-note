@@ -1,4 +1,4 @@
-import { Notice, Plugin, TAbstractFile, TFile } from 'obsidian';
+import { Notice, Platform, Plugin, TAbstractFile, TFile } from 'obsidian';
 import type { Bounds } from './native';
 import { FloatPanel, sweepOrphanPanels, writePanelPage } from './panel';
 import { DEFAULT_SETTINGS, FloatNoteSettings, FloatNoteSettingTab } from './settings';
@@ -36,9 +36,13 @@ export default class FloatNotePlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-		const swept = sweepOrphanPanels();
-		if (swept) this.log('orphans-swept', { count: swept });
-		this.pagePath = writePanelPage(this.manifest.version);
+		// The panel relies on macOS window behaviour - a panel-type window over
+		// full-screen Spaces - and is tested nowhere else. Elsewhere the commands
+		// stay registered and say so, rather than vanishing without explanation.
+		if (Platform.isMacOS) {
+			const swept = sweepOrphanPanels();
+			if (swept) this.log('orphans-swept', { count: swept });
+		}
 
 		this.addCommand({
 			id: 'float-current-note',
@@ -112,6 +116,10 @@ export default class FloatNotePlugin extends Plugin {
 	}
 
 	async floatCurrentNote(): Promise<void> {
+		if (!Platform.isMacOS) {
+			new Notice('Float Note works on macOS only.');
+			return;
+		}
 		const file = this.app.workspace.getActiveFile();
 		if (!file) {
 			new Notice('Float Note: no active note to float.');
@@ -130,6 +138,7 @@ export default class FloatNotePlugin extends Plugin {
 			}
 			this.closePanelNow();
 			sweepOrphanPanels();
+			if (!this.pagePath) this.pagePath = await writePanelPage(this.app.vault.adapter, `${this.manifest.dir}/panel.html`);
 			const text = await this.app.vault.read(file);
 			this.binding = { file, lastWritten: text, pending: null, changedAt: 0 };
 			this.panel = await FloatPanel.open(
@@ -249,7 +258,7 @@ export default class FloatNotePlugin extends Plugin {
 		if (!b || !panel) return;
 		const started = Date.now();
 		try {
-			const view = await buildViewDocument(this.app, b.file, b.pending ?? b.lastWritten, this.settings.debugLog);
+			const view = await buildViewDocument(this.app, b.file, b.pending ?? b.lastWritten, this.settings.debugLog ? `${this.manifest.dir}/last-view.html` : null);
 			if (this.binding !== b || this.panel !== panel) return;
 			await panel.showView(view.srcdoc);
 			this.log('view-rendered', { ms: Date.now() - started, htmlBytes: view.htmlBytes, cssBytes: view.cssBytes, imagesRewritten: view.imagesRewritten });

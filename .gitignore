@@ -1,9 +1,6 @@
 # vscode
 .vscode 
 
-# Salesforce
-.sf/
-
 # Intellij
 *.iml
 .idea
@@ -26,3 +23,6 @@ data.json
 
 # Salesforce CLI cache, written by session tooling - never part of this plugin
 .sf/
+
+# Implementation plans
+plans/*

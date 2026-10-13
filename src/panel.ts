@@ -1,6 +1,4 @@
-import { mkdirSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
+import { DataAdapter, FileSystemAdapter } from 'obsidian';
 import editorScript from 'virtual:panel-editor';
 import { Bounds, NativeWindow, createWindow, isAlive, onSomeDisplay, safe, windowsTitled } from './native';
 import type { CloseSource, LoadArgs, PollResult, Theme } from './panel-editor';
@@ -38,17 +36,18 @@ export interface PanelEvents {
 }
 
 /**
- * Write the panel page to the temp directory and return its path. Once per
- * plugin load: the page is static - CodeMirror and a boot script - and the
+ * Write the panel page to `path` in the vault - the plugin folder - and return
+ * its absolute path for the window to load. Once per plugin load, on the
+ * first float: the page is static - CodeMirror and a boot script - and the
  * note and theme arrive afterwards through `floatNote.load`. A file rather
- * than a data: URL because the bundled editor is too large for one.
+ * than a data: URL because the bundled editor is too large for one; in the
+ * plugin folder rather than the temp directory so the plugin writes nothing
+ * outside the vault, and the file goes when the plugin is uninstalled.
  */
-export function writePanelPage(version: string): string {
-	const dir = join(tmpdir(), 'obsidian-float-note');
-	mkdirSync(dir, { recursive: true });
-	const path = join(dir, `panel-${version}.html`);
-	writeFileSync(path, renderPage(), 'utf8');
-	return path;
+export async function writePanelPage(adapter: DataAdapter, path: string): Promise<string> {
+	if (!(adapter instanceof FileSystemAdapter)) throw new Error('The panel page needs a vault on the local file system');
+	await adapter.write(path, renderPage());
+	return adapter.getFullPath(path);
 }
 
 /**

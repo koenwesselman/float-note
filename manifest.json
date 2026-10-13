@@ -5,5 +5,7 @@
 	"minAppVersion": "1.9.0",
 	"description": "Pop the current note into a small always-on-top window that stays visible across Spaces, over full-screen apps and across displays (macOS).",
 	"author": "Koen Wesselman",
+	"authorUrl": "https://github.com/koenwesselman",
+	"fundingUrl": "https://buymeacoffee.com/koenwesselman",
 	"isDesktopOnly": true
 }

@@ -29,4 +29,10 @@ export default defineConfig(
 		},
 	},
 	...obsidianmd.configs.recommended,
+	{
+		rules: {
+			// "Float Note" is the plugin's name, so its capital N stays in the notices it prefixes.
+			'obsidianmd/ui/sentence-case': ['warn', { ignoreRegex: ['^Float Note\\b'] }],
+		},
+	},
 );
