@@ -1,5 +1,7 @@
 # Float Note
 
+[![Buy me a coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/koenwesselman)
+
 Float the note you are working on in a small window that stays on top of everything on your Mac. It stays visible when you switch Spaces, when another app goes full screen, and when you move between displays, like Tot's overlay but for a note in your vault.
 
 Use it to keep a checklist, meeting notes or a scratchpad in view while you work in another app, and to type straight into it.
@@ -86,6 +88,12 @@ npm run build
 ```
 
 Copy `main.js`, `manifest.json` and `styles.css` into `<vault>/.obsidian/plugins/float-note/`, then reload Obsidian. Run `npm run lint` before committing.
+
+## Support
+
+If Float Note is useful to you, you can buy me a coffee.
+
+<a href="https://buymeacoffee.com/koenwesselman"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" width="217" height="60"></a>
 
 ## Licence
 
