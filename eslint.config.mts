@@ -35,4 +35,10 @@ export default defineConfig(
 			'obsidianmd/ui/sentence-case': ['warn', { ignoreRegex: ['^Float Note\\b'] }],
 		},
 	},
+	{
+		// The panel page runs in its own sandboxed window, where Obsidian's
+		// createEl and friends do not exist.
+		files: ['src/panel-editor/**/*.ts'],
+		rules: { 'obsidianmd/prefer-create-el': 'off' },
+	},
 );

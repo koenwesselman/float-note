@@ -1,12 +1,5 @@
-import { App, Component, MarkdownRenderer, TFile, setIcon } from 'obsidian';
-
-/**
- * How long to let post-processors finish after MarkdownRenderer.render
- * resolves. Some draw asynchronously; anything slower than this - a Dataview
- * query, say - is missing from the view, which is the accepted cost of
- * copying Obsidian's output out of Obsidian.
- */
-const SETTLE_MS = 100;
+import { App, TFile } from 'obsidian';
+import { collectCss, renderHtml } from './render';
 
 export interface ViewDocument {
 	srcdoc: string;
@@ -17,31 +10,12 @@ export interface ViewDocument {
 
 /**
  * The note as Obsidian renders it, as a complete HTML document for the
- * panel's View frame. Rendered here in the main window - the only place
- * Obsidian's renderer exists - into a detached element, then copied out with
- * Obsidian's stylesheets and the body classes and inline variables that carry
- * the theme. Read-only by construction: nothing in the frame talks back.
+ * panel's View frame, copied out with Obsidian's stylesheets and the body
+ * classes and inline variables that carry the theme. Read-only by
+ * construction: nothing in the frame talks back.
  */
 export async function buildViewDocument(app: App, file: TFile, text: string, dumpPath: string | null = null): Promise<ViewDocument> {
-	// Attached, though hidden: some of what Obsidian draws - callout icons -
-	// is only filled in once the element is in a document with styles applied.
-	const host = document.body.createDiv();
-	host.setCssStyles({ position: 'absolute', left: '-10000px', top: '0', width: '420px', visibility: 'hidden', pointerEvents: 'none' });
-	const component = new Component();
-	component.load();
-	let html: string;
-	let imagesRewritten = 0;
-	try {
-		await MarkdownRenderer.render(app, text, host, file.path, component);
-		await sleep(SETTLE_MS);
-		fillCalloutIcons(host);
-		imagesRewritten = rewriteImages(host);
-		html = host.innerHTML;
-	} finally {
-		component.unload();
-		host.remove();
-	}
-
+	const { html, imagesRewritten } = await renderHtml(app, file, text);
 	if (dumpPath) dumpHtml(app, dumpPath, html);
 	const css = await collectCss();
 	const body = document.body;
@@ -65,119 +39,10 @@ a { cursor: default; }
 	return { srcdoc, htmlBytes: html.length, cssBytes: css.length, imagesRewritten };
 }
 
-/** A file:// URL for an absolute macOS path, every segment escaped - `%`, `#` and `?` included. */
-function fileUrl(path: string): string {
-	return 'file://' + path.split('/').map(encodeURIComponent).join('/');
-}
-
-/**
- * Obsidian serves vault files at `app://<id>/<absolute path>`, a scheme only
- * its own windows resolve. The panel page is loaded from a file:// URL, so the
- * same file can be reached by its plain file URL: the path is already in the
- * app:// URL, and only the scheme changes.
- */
-function rewriteImages(root: HTMLElement): number {
-	let count = 0;
-	for (const img of Array.from(root.querySelectorAll('img'))) {
-		const src = img.getAttribute('src');
-		if (!src?.startsWith('app://')) continue;
-		try {
-			const path = decodeURIComponent(new URL(src).pathname);
-			img.setAttribute('src', fileUrl(path));
-			count++;
-		} catch {
-			// Left as it was: the alt text shows, as before.
-		}
-	}
-	return count;
-}
-
 /** The last rendered HTML, beside debug.log, for diagnosing what Obsidian produced. Debug log only. */
 function dumpHtml(app: App, path: string, html: string): void {
 	// Diagnostics only: a failed write is not worth reporting.
 	app.vault.adapter.write(path, html).catch(() => undefined);
-}
-
-/**
- * Every stylesheet in the main window as text: Obsidian's own, the theme and
- * enabled snippets. Relative url()s - fonts, mostly - are made absolute
- * against their sheet, because in the frame they would resolve against nothing.
- */
-async function collectCss(): Promise<string> {
-	const parts: string[] = [];
-	for (const sheet of Array.from(document.styleSheets)) {
-		let rules: CSSRuleList;
-		try {
-			rules = sheet.cssRules;
-		} catch {
-			continue;
-		}
-		let text = Array.from(rules, (rule) => rule.cssText).join('\n');
-		if (sheet.href) text = absoluteUrls(text, sheet.href);
-		parts.push(text);
-	}
-	const css = await inlineAppImages(parts.join('\n'));
-	return css.replace(/<\/style/gi, '<\\/style');
-}
-
-/** app:// images fetched once per session, as data URLs. */
-const inlined = new Map<string, string | null>();
-
-/**
- * Images Obsidian's stylesheet loads from app:// - the external-link arrows -
- * fetched here, where app:// resolves, and inlined as data URLs. Fonts are left
- * alone: the view does without them, and they are hundreds of kilobytes.
- */
-async function inlineAppImages(css: string): Promise<string> {
-	const urls = new Set(Array.from(css.matchAll(/url\((['"]?)(app:\/\/[^'")]+\.(?:svg|png))\1\)/gi), (m) => m[2] ?? ''));
-	for (const url of urls) {
-		if (!url || inlined.has(url)) continue;
-		try {
-			const response = await fetch(url);
-			const blob = await response.blob();
-			inlined.set(url, blob.size <= 65536 ? await toDataUrl(blob) : null);
-		} catch {
-			inlined.set(url, null);
-		}
-	}
-	return css.replace(/url\((['"]?)(app:\/\/[^'")]+)\1\)/g, (match, quote: string, url: string) => {
-		const data = inlined.get(url);
-		return data ? `url(${quote}${data}${quote})` : match;
-	});
-}
-
-function toDataUrl(blob: Blob): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const reader = new FileReader();
-		reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-		reader.onerror = () => reject(reader.error ?? new Error('read failed'));
-		reader.readAsDataURL(blob);
-	});
-}
-
-/**
- * Callout icons left empty by the renderer, filled from the icon the theme
- * names in `--callout-icon` on the callout - the same lookup Obsidian makes.
- */
-function fillCalloutIcons(root: HTMLElement): void {
-	for (const icon of Array.from(root.querySelectorAll<HTMLElement>('.callout-icon'))) {
-		const svg = icon.querySelector('svg');
-		if (svg && svg.childElementCount > 0) continue;
-		const callout = icon.closest('.callout');
-		const name = callout ? getComputedStyle(callout).getPropertyValue('--callout-icon').trim() : '';
-		if (name) setIcon(icon, name);
-	}
-}
-
-function absoluteUrls(css: string, base: string): string {
-	return css.replace(/url\((['"]?)([^'")]+)\1\)/g, (match, quote: string, url: string) => {
-		if (/^(data:|[a-z][a-z0-9+.-]*:|#)/i.test(url)) return match;
-		try {
-			return `url(${quote}${new URL(url, base).href}${quote})`;
-		} catch {
-			return match;
-		}
-	});
 }
 
 function escapeAttribute(value: string): string {

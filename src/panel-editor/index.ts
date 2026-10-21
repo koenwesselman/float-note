@@ -14,10 +14,18 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { syntaxHighlighting } from '@codemirror/language';
 import { frontmatter } from './frontmatter';
 import { livePreview } from './live-preview';
+import { linkClicks, setUnresolved, takeOpenRequest, unresolvedField } from './live-preview/links';
+import type { LinkTarget } from './live-preview/links';
+import { clearRendered, notifyRendered, storeRendered, setStylesheet, takeRenderRequests } from './live-preview/render';
+import type { Rendered, RenderRequest, Stylesheet } from './live-preview/render';
+import { setRenderedLanguages } from './live-preview/fences';
+import { reveal, syncFocus } from './live-preview/reveal';
+import { frame, showInFrame, watchFrame } from './reading';
 import { markdownSyntax } from './syntax';
 import { Theme, applyTheme, editorTheme, highlight } from './theme';
 
-export type { Theme } from './theme';
+export type { CalloutStyle, Theme } from './theme';
+export type { LinkTarget, Rendered, RenderRequest, Stylesheet };
 
 /** How the note is edited: Obsidian's Source mode or Live Preview. */
 export type EditingMode = 'source' | 'live';
@@ -29,6 +37,10 @@ export interface LoadArgs {
 	theme: Theme;
 	/** Obsidian's default editing mode, which the panel follows. */
 	editingMode: EditingMode;
+	/** Link paths in the note that resolve to nothing. */
+	unresolved: string[];
+	/** Code block languages Obsidian draws, for Live Preview to show rendered. */
+	renderedLanguages: string[];
 }
 
 export type CloseSource = 'escape' | 'button' | 'mod-w';
@@ -42,6 +54,10 @@ export interface PollResult {
 	mode: Mode;
 	/** Measurements of the last View load, reported once. */
 	viewDiagnostics: Record<string, unknown> | null;
+	/** Blocks Live Preview wants Obsidian to render. */
+	renderRequests: RenderRequest[];
+	/** A link the user Cmd+clicked. */
+	openLink: LinkTarget | null;
 }
 
 /** Marks a change that came from the vault, so it is not reported back as an edit. */
@@ -64,7 +80,7 @@ function requestClose(source: CloseSource): boolean {
 	return true;
 }
 
-function createState(text: string, editing: EditingMode): EditorState {
+function createState(text: string, editing: EditingMode, unresolved: readonly string[] = []): EditorState {
 	return EditorState.create({
 		doc: text,
 		extensions: [
@@ -75,6 +91,9 @@ function createState(text: string, editing: EditingMode): EditorState {
 			frontmatter,
 			syntaxHighlighting(highlight),
 			editorTheme,
+			reveal,
+			unresolvedField.init(() => new Set(unresolved)),
+			linkClicks,
 			preview.of(editing === 'live' ? livePreview : sourceMode),
 			keymap.of([
 				{ key: 'Escape', run: () => requestClose('escape') },
@@ -103,13 +122,6 @@ function setName(name: string): void {
 document.getElementById('fn-close')?.addEventListener('click', () => requestClose('button'));
 document.getElementById('fn-mode')?.addEventListener('click', () => toggleMode());
 
-/**
- * View is Obsidian's own rendering, made by the plugin in the main window and
- * shown here in an iframe. An iframe because the view carries Obsidian's whole
- * stylesheet, which also styles `.cm-editor` - the same classes this page's
- * editor uses - so it must not share a document with it.
- */
-const frame = document.getElementById('fn-view') as HTMLIFrameElement | null;
 const editorEl = document.getElementById('fn-editor');
 
 function setMode(next: Mode): void {
@@ -161,64 +173,21 @@ function onKey(event: KeyboardEvent): void {
 }
 document.addEventListener('keydown', onKey, true);
 
-/** The view is read-only: links do not navigate and checkboxes do not toggle. */
-function wireFrame(): void {
-	const doc = frame?.contentDocument;
-	if (!doc) return;
-	doc.addEventListener('keydown', onKey, true);
-	doc.addEventListener(
-		'click',
-		(event) => {
-			const target = event.target as Element | null;
-			if (target?.closest('a, input')) event.preventDefault();
-		},
-		true,
-	);
-}
-frame?.addEventListener('load', () => {
-	wireFrame();
-	const y = Number(frame.dataset.scroll ?? 0);
-	frame.contentWindow?.scrollTo(0, y);
-	viewDiagnostics = diagnose();
-});
-
-/** What the frame actually shows, for the debug log - the frame cannot be seen from the plugin. */
-function diagnose(): Record<string, unknown> {
-	const doc = frame?.contentDocument;
-	if (!frame || !doc) return { frame: frame ? 'no document' : 'missing' };
-	const win = frame.contentWindow;
-	const preview = doc.querySelector('.markdown-preview-view');
-	const first = doc.querySelector('.markdown-preview-sizer > *');
-	const style = (el: Element | null) => {
-		if (!el || !win) return null;
-		const c = win.getComputedStyle(el);
-		const r = el.getBoundingClientRect();
-		return { display: c.display, visibility: c.visibility, opacity: c.opacity, color: c.color, background: c.backgroundColor, position: c.position, top: Math.round(r.top), height: Math.round(r.height), width: Math.round(r.width) };
-	};
-	return {
-		frameSize: [frame.clientWidth, frame.clientHeight],
-		frameDisplay: getComputedStyle(frame).display,
-		srcdocLength: frame.srcdoc.length,
-		textLength: doc.body?.innerText.length ?? null,
-		scrollHeight: doc.documentElement.scrollHeight,
-		html: style(doc.documentElement),
-		body: style(doc.body),
-		preview: style(preview),
-		firstChild: first ? { tag: first.tagName, cls: first.className, ...style(first) } : null,
-		images: Array.from(doc.images, (img) => ({ src: img.src.slice(0, 40), complete: img.complete, naturalWidth: img.naturalWidth })),
-	};
-}
+watchFrame(onKey, (diagnostics) => (viewDiagnostics = diagnostics));
 
 const api = {
 	/** A new note: fresh state, so undo history does not cross notes. */
 	load(args: LoadArgs): void {
 		applyTheme(args.theme);
 		setName(args.name);
-		view.setState(createState(args.text, args.editingMode));
+		setRenderedLanguages(args.renderedLanguages);
+		clearRendered();
+		view.setState(createState(args.text, args.editingMode, args.unresolved));
 		unpolled = false;
 		closeRequested = null;
 		viewRequested = false;
 		setMode(args.editingMode);
+		syncFocus(view);
 	},
 
 	/** Edits since the last poll, whether the user asked to close, and whether View wants rendering. */
@@ -229,6 +198,8 @@ const api = {
 			viewRequested,
 			mode,
 			viewDiagnostics,
+			renderRequests: takeRenderRequests(),
+			openLink: takeOpenRequest(),
 		};
 		unpolled = false;
 		viewRequested = false;
@@ -238,9 +209,21 @@ const api = {
 
 	/** Show a rendered document in View, keeping the reader's scroll position across re-renders. */
 	showView(srcdoc: string): void {
-		if (!frame || mode !== 'view') return;
-		frame.dataset.scroll = String(frame.contentWindow?.scrollY ?? 0);
-		frame.srcdoc = srcdoc;
+		if (mode === 'view') showInFrame(srcdoc);
+	},
+
+	/** Obsidian's renderings of blocks Live Preview asked for. */
+	setRendered(results: Rendered[]): void {
+		storeRendered(results);
+		notifyRendered(view);
+	},
+
+	/** Obsidian's stylesheet, for those renderings. Sent before the first of them. */
+	setStylesheet,
+
+	/** Link paths that resolve to nothing, after Obsidian re-indexed the note. */
+	setUnresolved(list: string[]): void {
+		view.dispatch({ effects: setUnresolved.of(list) });
 	},
 
 	/**

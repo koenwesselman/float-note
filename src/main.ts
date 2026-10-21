@@ -1,8 +1,10 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile } from 'obsidian';
 import { readEditingMode } from './editing-mode';
+import { openLink, renderedLanguages, unresolvedLinks } from './links';
 import type { Bounds } from './native';
-import { FloatPanel, sweepOrphanPanels, writePanelPage } from './panel';
+import { FloatPanel, PanelContent, sweepOrphanPanels, writePanelPage } from './panel';
 import { DEFAULT_SETTINGS, FloatNoteSettings, FloatNoteSettingTab } from './settings';
+import { answerRenderRequests } from './snippets';
 import { buildViewDocument } from './view';
 
 /**
@@ -93,6 +95,12 @@ export default class FloatNotePlugin extends Plugin {
 				if (this.panel && file instanceof TFile && file === this.binding?.file) void this.panel.setName(file.basename);
 			}),
 		);
+		// Live Preview dims links to notes that do not exist; which those are changes as the note is saved and indexed.
+		this.registerEvent(
+			this.app.metadataCache.on('resolve', (file) => {
+				if (this.panel && file === this.binding?.file) void this.panel.setUnresolved(unresolvedLinks(this.app, file));
+			}),
+		);
 		this.registerEvent(
 			this.app.vault.on('delete', (file) => {
 				if (file !== this.binding?.file) return;
@@ -143,7 +151,7 @@ export default class FloatNotePlugin extends Plugin {
 				await this.saveNow();
 				const text = await this.app.vault.read(file);
 				this.binding = { file, lastWritten: text, pending: null, changedAt: 0 };
-				await this.panel.show({ name: file.basename, text, editingMode: readEditingMode(this.app) });
+				await this.panel.show(this.content(file, text));
 				this.log('panel-retargeted', { path: file.path });
 				return;
 			}
@@ -154,7 +162,7 @@ export default class FloatNotePlugin extends Plugin {
 			this.binding = { file, lastWritten: text, pending: null, changedAt: 0 };
 			this.panel = await FloatPanel.open(
 				this.pagePath,
-				{ name: file.basename, text, editingMode: readEditingMode(this.app) },
+				this.content(file, text),
 				() => this.settings,
 				(event, extra) => this.log(event, extra),
 				{
@@ -164,6 +172,14 @@ export default class FloatNotePlugin extends Plugin {
 						void this.closePanel();
 					},
 					onViewRequested: () => void this.renderView(),
+					onRenderRequests: (requests) => {
+						const b = this.binding;
+						if (b && this.panel) void answerRenderRequests(this.app, b.file, this.panel, requests, (event, extra) => this.log(event, extra));
+					},
+					onOpenLink: (link) => {
+						this.log('link-opened', { external: link.external });
+						if (this.binding) openLink(this.app, this.binding.file, link);
+					},
 					onBounds: (bounds) => this.rememberBounds(bounds),
 					onTick: () => this.writeIfIdle(),
 				},
@@ -176,6 +192,17 @@ export default class FloatNotePlugin extends Plugin {
 		} finally {
 			this.busy = false;
 		}
+	}
+
+	/** What the panel needs to show a note. */
+	private content(file: TFile, text: string): PanelContent {
+		return {
+			name: file.basename,
+			text,
+			editingMode: readEditingMode(this.app),
+			unresolved: unresolvedLinks(this.app, file),
+			renderedLanguages: renderedLanguages(),
+		};
 	}
 
 	/** Hide or show the open panel; with none open, float the current note. */

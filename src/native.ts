@@ -40,6 +40,8 @@ interface RemoteBrowserWindow {
 
 interface Remote {
 	BrowserWindow?: RemoteBrowserWindow;
+	app?: { focus(options?: { steal: boolean }): void };
+	getCurrentWindow?: () => NativeWindow & { focus(): void };
 	screen?: { getAllDisplays(): { workArea: Bounds }[] };
 }
 
@@ -77,6 +79,16 @@ export function onSomeDisplay(bounds: Bounds): boolean {
 		const overlapY = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y);
 		return overlapX >= 60 && overlapY >= 40;
 	});
+}
+
+/**
+ * Bring Obsidian's main window to the front, over the app the panel floats
+ * above - for a link opened from the panel, which lands in the main window.
+ */
+export function focusMainWindow(): void {
+	const r = remote();
+	safe(() => r?.app?.focus({ steal: true }), undefined);
+	safe(() => r?.getCurrentWindow?.().focus(), undefined);
 }
 
 /** Every live main-process window with this title. */
