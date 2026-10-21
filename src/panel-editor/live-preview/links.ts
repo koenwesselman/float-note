@@ -2,11 +2,17 @@ import { syntaxTree } from '@codemirror/language';
 import { EditorState, StateEffect, StateField } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
+import { noteId } from './note';
 
 /** A link the user asked to open: a note or file Obsidian resolves, or a URL. */
 export interface LinkTarget {
 	target: string;
 	external: boolean;
+}
+
+/** A link to open, and the tab it was clicked in, whose note relative links resolve against. */
+export interface OpenRequest extends LinkTarget {
+	tab: string;
 }
 
 /** Link paths in the note that resolve to nothing, as Obsidian's metadata cache lists them. */
@@ -30,14 +36,14 @@ export function isUnresolved(state: EditorState, target: string): boolean {
 	return path !== '' && state.field(unresolvedField, false)?.has(path) === true;
 }
 
-let pending: LinkTarget | null = null;
+let pending: OpenRequest | null = null;
 
 /** Queue a link to open; the plugin collects it on its next poll. */
-export function requestOpen(link: LinkTarget): void {
-	pending = link;
+export function requestOpen(link: LinkTarget, tab: string): void {
+	pending = { ...link, tab };
 }
 
-export function takeOpenRequest(): LinkTarget | null {
+export function takeOpenRequest(): OpenRequest | null {
 	const link = pending;
 	pending = null;
 	return link;
@@ -105,7 +111,7 @@ export const linkClicks = EditorView.domEventHandlers({
 		const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
 		const link = pos === null ? null : linkAt(view.state, pos);
 		if (!link) return false;
-		requestOpen(link);
+		requestOpen(link, view.state.facet(noteId));
 		event.preventDefault();
 		return true;
 	},

@@ -8,18 +8,11 @@ import { isExternal, requestOpen } from './live-preview/links';
  */
 export const frame = document.getElementById('fn-view') as HTMLIFrameElement | null;
 
-/** Show a rendered document, keeping the reader's scroll position across re-renders. */
-export function showInFrame(srcdoc: string): void {
-	if (!frame) return;
-	frame.dataset.scroll = String(frame.contentWindow?.scrollY ?? 0);
-	frame.srcdoc = srcdoc;
-}
-
 /**
  * The view does not edit: checkboxes do not toggle, and a plain click on a
  * link does nothing. Cmd+click opens the link in Obsidian.
  */
-function wireFrame(onKey: (event: KeyboardEvent) => void): void {
+function wireFrame(onKey: (event: KeyboardEvent) => void, tab: () => string): void {
 	const doc = frame?.contentDocument;
 	if (!doc) return;
 	doc.addEventListener('keydown', onKey, true);
@@ -33,16 +26,16 @@ function wireFrame(onKey: (event: KeyboardEvent) => void): void {
 			if (!anchor || !(event.metaKey || event.ctrlKey)) return;
 			const internal = anchor.getAttribute('data-href');
 			const href = internal ?? anchor.getAttribute('href') ?? '';
-			if (href) requestOpen({ target: href, external: internal === null && isExternal(href) });
+			if (href) requestOpen({ target: href, external: internal === null && isExternal(href) }, tab());
 		},
 		true,
 	);
 }
 
-/** Wire each document the frame loads, restore its scroll position, and report what it shows. */
-export function watchFrame(onKey: (event: KeyboardEvent) => void, report: (diagnostics: Record<string, unknown>) => void): void {
+/** Wire each document the frame loads, restore its scroll position, and report what it shows. `tab` names the tab whose rendering it holds. */
+export function watchFrame(onKey: (event: KeyboardEvent) => void, tab: () => string, report: (diagnostics: Record<string, unknown>) => void): void {
 	frame?.addEventListener('load', () => {
-		wireFrame(onKey);
+		wireFrame(onKey, tab);
 		const y = Number(frame.dataset.scroll ?? 0);
 		frame.contentWindow?.scrollTo(0, y);
 		report(diagnose());

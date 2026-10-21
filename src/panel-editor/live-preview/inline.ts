@@ -49,7 +49,7 @@ export function decorateInline(b: Builder, ref: SyntaxNodeRef): boolean {
 	if (RENDERED.has(name)) {
 		const multiline = state.doc.lineAt(ref.from).number !== state.doc.lineAt(ref.to).number;
 		// Multi-line math is a block, which only blocks.ts may replace.
-		if (!multiline && !isRevealed(state, ref.from, ref.to)) b.widget(ref.from, ref.to, new RenderedWidget(state.sliceDoc(ref.from, ref.to), true));
+		if (!multiline && !isRevealed(state, ref.from, ref.to)) b.widget(ref.from, ref.to, new RenderedWidget(state, state.sliceDoc(ref.from, ref.to), true));
 		return false;
 	}
 	return true;

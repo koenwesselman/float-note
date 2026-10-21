@@ -23,7 +23,7 @@ export function buildBlocks(state: EditorState): DecorationSet {
 				const to = state.doc.lineAt(ref.to).to;
 				if (isRevealed(state, from, to)) return false;
 				const source = state.sliceDoc(ref.from, ref.to);
-				b.widget(from, to, name === 'Table' ? new TableWidget(source, ref.from) : new RenderedWidget(source, false), true);
+				b.widget(from, to, name === 'Table' ? new TableWidget(source, ref.from) : new RenderedWidget(state, source, false), true);
 				return false;
 			}
 			return true;

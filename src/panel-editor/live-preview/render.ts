@@ -1,16 +1,19 @@
-import { StateEffect } from '@codemirror/state';
+import { EditorState, StateEffect } from '@codemirror/state';
 import { EditorView, WidgetType } from '@codemirror/view';
 import { isExternal, requestOpen } from './links';
+import { noteId } from './note';
 
 /**
  * What the panel cannot draw itself - math, Mermaid, embeds, images,
  * plugin code blocks - Obsidian renders in the main window. A widget that
  * has no rendering yet shows its source and asks for one; the plugin
  * collects the request on its next poll and answers with setRendered.
- * Renderings are kept per source, so typing elsewhere asks for nothing.
+ * Renderings are kept per tab and source, so typing elsewhere asks for nothing.
  */
 export interface RenderRequest {
 	key: string;
+	/** The tab asking, whose note embeds and relative paths resolve against. */
+	tab: string;
 	markdown: string;
 	/** Inline content: the plugin unwraps the paragraph Obsidian puts around it. */
 	inline: boolean;
@@ -42,11 +45,12 @@ export function storeRendered(results: readonly Rendered[]): void {
 	}
 }
 
-/** A new note: renderings of the last one are not needed again. */
-export function clearRendered(): void {
-	cache.clear();
-	requested.clear();
-	queue = [];
+/** A closed tab's renderings, which nothing will show again. */
+export function clearRendered(tab: string): void {
+	const prefix = `${tab}\n`;
+	for (const key of [...cache.keys()]) if (key.startsWith(prefix)) cache.delete(key);
+	for (const key of [...requested]) if (key.startsWith(prefix)) requested.delete(key);
+	queue = queue.filter((r) => r.tab !== tab);
 }
 
 /**
@@ -86,14 +90,14 @@ export function setStylesheet(sheet: Stylesheet): void {
 }
 
 /** Cmd+click on a link in a rendering opens it; a plain click on one does nothing, as it would navigate the panel. */
-function wireLinks(root: HTMLElement): void {
+function wireLinks(root: HTMLElement, tab: string): void {
 	root.addEventListener(
 		'mousedown',
 		(event) => {
 			const anchor = (event.target as Element | null)?.closest('a');
 			if (!anchor || !(event.metaKey || event.ctrlKey)) return;
 			const href = anchor.getAttribute('data-href') ?? anchor.getAttribute('href') ?? '';
-			if (href) requestOpen({ target: href, external: !anchor.hasAttribute('data-href') && isExternal(href) });
+			if (href) requestOpen({ target: href, external: !anchor.hasAttribute('data-href') && isExternal(href) }, tab);
 			event.preventDefault();
 			event.stopPropagation();
 		},
@@ -105,15 +109,18 @@ function wireLinks(root: HTMLElement): void {
 }
 
 export class RenderedWidget extends WidgetType {
+	private readonly tab: string;
 	private readonly key: string;
 	private readonly html: string | null | undefined;
 
 	constructor(
+		state: EditorState,
 		private readonly source: string,
 		private readonly inline: boolean,
 	) {
 		super();
-		this.key = `${inline ? 'i' : 'b'}:${source}`;
+		this.tab = state.facet(noteId);
+		this.key = `${this.tab}\n${inline ? 'i' : 'b'}:${source}`;
 		this.html = cache.get(this.key);
 	}
 
@@ -137,7 +144,7 @@ export class RenderedWidget extends WidgetType {
 		content.className = `fn-obsidian markdown-preview-view markdown-rendered ${this.inline ? 'fn-inline' : ''} ${bodyClass}`;
 		// Obsidian's own renderer output, made in the main window from this note.
 		content.append(...Array.from(new DOMParser().parseFromString(this.html, 'text/html').body.childNodes));
-		wireLinks(content);
+		wireLinks(content, this.tab);
 		shadow.append(content);
 		return host;
 	}
@@ -145,7 +152,7 @@ export class RenderedWidget extends WidgetType {
 	private request(): void {
 		if (requested.has(this.key)) return;
 		requested.add(this.key);
-		queue.push({ key: this.key, markdown: this.source, inline: this.inline });
+		queue.push({ key: this.key, tab: this.tab, markdown: this.source, inline: this.inline });
 	}
 
 	/** Clicks reach the editor, which puts the cursor beside the widget and so reveals its source. */
