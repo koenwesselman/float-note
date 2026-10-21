@@ -2,12 +2,13 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState } from '@codemirror/state';
 import { EditorView, WidgetType } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
+import { el } from '../dom';
 
 type Align = 'left' | 'center' | 'right' | null;
 
 /** Marks and link parts that are not shown when inline Markdown is drawn. */
 const HIDDEN = new Set(['EmphasisMark', 'CodeMark', 'LinkMark', 'StrikethroughMark', 'HighlightMark', 'WikiMark', 'URL', 'LinkTitle', 'LinkLabel', 'CommentMark', 'Comment']);
-const ELEMENTS: Record<string, string> = {
+const ELEMENTS: Record<string, keyof HTMLElementTagNameMap> = {
 	StrongEmphasis: 'strong',
 	Emphasis: 'em',
 	Strikethrough: 's',
@@ -27,16 +28,14 @@ export function renderInline(state: EditorState, node: SyntaxNode, from: number,
 			parent.append(state.sliceDoc(child.from + 1, child.to));
 		} else if (child.name === 'WikiLink' || child.name === 'Embed') {
 			const shown = child.getChild('WikiAlias') ?? child.getChild('WikiTarget');
-			const link = parent.appendChild(document.createElement('span'));
-			link.className = 'fn-link';
+			const link = parent.appendChild(el('span', 'fn-link'));
 			if (shown) link.textContent = state.sliceDoc(shown.from, shown.to);
 		} else if (child.name === 'Link') {
-			const link = parent.appendChild(document.createElement('span'));
-			link.className = 'fn-link';
+			const link = parent.appendChild(el('span', 'fn-link'));
 			renderInline(state, child, child.from, child.to, link);
 		} else {
 			const tag = ELEMENTS[child.name];
-			renderInline(state, child, child.from, child.to, tag ? parent.appendChild(document.createElement(tag)) : parent);
+			renderInline(state, child, child.from, child.to, tag ? parent.appendChild(el(tag)) : parent);
 		}
 	}
 	if (pos < to) parent.append(state.sliceDoc(pos, to));
@@ -75,8 +74,7 @@ export class TableWidget extends WidgetType {
 	}
 
 	toDOM(view: EditorView): HTMLElement {
-		const table = document.createElement('table');
-		table.className = 'fn-table';
+		const table = el('table', 'fn-table');
 		const node = syntaxTree(view.state).resolveInner(this.from, 1);
 		let tableNode: SyntaxNode | null = node;
 		while (tableNode && tableNode.name !== 'Table') tableNode = tableNode.parent;
@@ -94,7 +92,7 @@ export class TableWidget extends WidgetType {
 			const cells = row.getChildren('TableCell');
 			if (header) columns = cells.length;
 			for (let i = 0; i < Math.max(columns, cells.length); i++) {
-				const cell = tr.appendChild(document.createElement(header ? 'th' : 'td'));
+				const cell = tr.appendChild(el(header ? 'th' : 'td'));
 				const a = align[i];
 				if (a) cell.style.textAlign = a;
 				const source = cells[i];

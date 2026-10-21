@@ -2,6 +2,7 @@ import { EditorState, StateEffect } from '@codemirror/state';
 import { EditorView, WidgetType } from '@codemirror/view';
 import { isExternal, requestOpen } from './links';
 import { noteId } from './note';
+import { el } from '../dom';
 
 /**
  * What the panel cannot draw itself - math, Mermaid, embeds, images,
@@ -129,8 +130,7 @@ export class RenderedWidget extends WidgetType {
 	}
 
 	toDOM(): HTMLElement {
-		const host = document.createElement(this.inline ? 'span' : 'div');
-		host.className = this.inline ? 'fn-rendered fn-rendered-inline' : 'fn-rendered fn-rendered-block';
+		const host = el(this.inline ? 'span' : 'div', this.inline ? 'fn-rendered fn-rendered-inline' : 'fn-rendered fn-rendered-block');
 		if (this.html === undefined || this.html === null) {
 			host.classList.add(this.html === null ? 'fn-rendered-failed' : 'fn-rendered-pending');
 			host.textContent = this.source;
@@ -140,8 +140,7 @@ export class RenderedWidget extends WidgetType {
 		const shadow = host.attachShadow({ mode: 'open' });
 		const { obsidian, overrides } = adoptable();
 		shadow.adoptedStyleSheets = [obsidian, overrides];
-		const content = document.createElement(this.inline ? 'span' : 'div');
-		content.className = `fn-obsidian markdown-preview-view markdown-rendered ${this.inline ? 'fn-inline' : ''} ${bodyClass}`;
+		const content = el(this.inline ? 'span' : 'div', `fn-obsidian markdown-preview-view markdown-rendered ${this.inline ? 'fn-inline' : ''} ${bodyClass}`);
 		// Obsidian's own renderer output, made in the main window from this note.
 		content.append(...Array.from(new DOMParser().parseFromString(this.html, 'text/html').body.childNodes));
 		wireLinks(content, this.tab);

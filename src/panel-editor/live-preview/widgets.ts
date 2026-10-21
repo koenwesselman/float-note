@@ -1,5 +1,6 @@
 import { EditorView, WidgetType } from '@codemirror/view';
 import { calloutStyle } from '../theme';
+import { el } from '../dom';
 
 export class BulletWidget extends WidgetType {
 	eq(): boolean {
@@ -7,10 +8,9 @@ export class BulletWidget extends WidgetType {
 	}
 
 	toDOM(): HTMLElement {
-		const el = document.createElement('span');
-		el.className = 'fn-bullet';
-		el.textContent = '•';
-		return el;
+		const bullet = el('span', 'fn-bullet');
+		bullet.textContent = '•';
+		return bullet;
 	}
 }
 
@@ -36,19 +36,18 @@ export class CheckboxWidget extends WidgetType {
 	}
 
 	toDOM(view: EditorView): HTMLElement {
-		const el = document.createElement('span');
-		el.className = this.checked ? 'fn-checkbox fn-checked' : 'fn-checkbox';
-		el.setAttribute('role', 'checkbox');
-		el.setAttribute('aria-checked', String(this.checked));
-		el.addEventListener('mousedown', (event) => {
+		const box = el('span', this.checked ? 'fn-checkbox fn-checked' : 'fn-checkbox');
+		box.setAttribute('role', 'checkbox');
+		box.setAttribute('aria-checked', String(this.checked));
+		box.addEventListener('mousedown', (event) => {
 			event.preventDefault();
 			event.stopPropagation();
 			if (event.button !== 0) return;
-			const at = view.posAtDOM(el) + this.offset;
+			const at = view.posAtDOM(box) + this.offset;
 			const current = view.state.sliceDoc(at, at + 1);
 			view.dispatch({ changes: { from: at, to: at + 1, insert: current === ' ' ? 'x' : ' ' } });
 		});
-		return el;
+		return box;
 	}
 
 	ignoreEvent(): boolean {
@@ -62,9 +61,7 @@ export class RuleWidget extends WidgetType {
 	}
 
 	toDOM(): HTMLElement {
-		const el = document.createElement('span');
-		el.className = 'fn-rule';
-		return el;
+		return el('span', 'fn-rule');
 	}
 }
 
@@ -82,13 +79,12 @@ export class CalloutTitleWidget extends WidgetType {
 	}
 
 	toDOM(): HTMLElement {
-		const el = document.createElement('span');
-		const icon = el.appendChild(document.createElement('span'));
-		icon.className = 'fn-callout-icon';
+		const title = el('span');
+		const icon = title.appendChild(el('span', 'fn-callout-icon'));
 		// An icon from Obsidian's own set, as SVG markup measured from the theme.
 		const svg = calloutStyle(this.type).icon;
 		if (svg) icon.append(new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement);
-		if (this.showType) el.append(this.type.charAt(0).toUpperCase() + this.type.slice(1).toLowerCase());
-		return el;
+		if (this.showType) title.append(this.type.charAt(0).toUpperCase() + this.type.slice(1).toLowerCase());
+		return title;
 	}
 }
