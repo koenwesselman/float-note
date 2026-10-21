@@ -16,18 +16,29 @@ To install by hand, download `main.js` and `manifest.json` from the [latest rele
 
 ## Use
 
-Open a note and run **Float current note** from the command palette. The note opens in the floating panel. Drag the panel by its top strip, and resize it from any edge. It reopens where you left it.
+Open a note and run **Float current note** from the command palette. The note opens in the floating panel. Float another note and it opens in a new tab beside the first. Drag the panel by its top strip, and resize it from any edge. It reopens where you left it.
 
 None of the commands has a default hotkey. To summon the panel quickly, assign one under **Settings → Hotkeys**.
 
 | Command | What it does |
 | --- | --- |
-| **Float current note** | Opens the active note in the panel, or switches the open panel to it. |
+| **Float current note** | Opens the active note in the panel, in a new tab when the panel is already open. A note already floating switches to its tab. |
 | **Toggle float overlay** | Hides or shows the panel, saving first. With no panel open, floats the current note. |
-| **Toggle float view** | Switches the panel between Edit and View when the panel does not have focus. |
-| **Close float overlay** | Saves and closes the panel. |
+| **Toggle float view** | Switches the panel's current tab between Edit and View when the panel does not have focus. |
+| **Close float overlay** | Saves and closes the panel, with all its tabs. |
 
-Inside the panel, **Cmd+E** switches between Edit and View. **Esc**, **Cmd+W** or the **×** on the top strip close it.
+## Tabs
+
+Each floating note has a tab on the panel's top strip.
+
+- Select a tab to switch to it, or use **Cmd+Shift+[** and **Cmd+Shift+]**, or **Ctrl+Tab** and **Ctrl+Shift+Tab**.
+- Drag a tab to reorder it.
+- **Cmd+W**, the tab's **×** or a middle-click close a tab, saving it first. Closing the last tab closes the panel.
+- **Esc** closes the panel with all its tabs.
+
+Each tab keeps its own undo history, cursor, scroll position, and Edit or View. Tabs are not remembered once the panel closes.
+
+Inside the panel, **Cmd+E** switches the current tab between Edit and View.
 
 ## Edit and View
 
@@ -55,7 +66,7 @@ There is no Live Preview. The panel is a separate window outside Obsidian's work
 
 Float Note makes no network requests and collects nothing.
 
-It reads and writes only the note you float, and its own files in its plugin folder, `.obsidian/plugins/float-note/`:
+It reads and writes only the notes you float, and its own files in its plugin folder, `.obsidian/plugins/float-note/`:
 
 - `data.json`: its settings and where the panel was last left.
 - `panel.html`: the panel's page, a static file holding the editor. The panel is a separate window and has to load its page from a file. It contains no note content.

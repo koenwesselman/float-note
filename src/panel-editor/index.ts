@@ -15,6 +15,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { yamlFrontmatter } from '@codemirror/lang-yaml';
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
 import { tags as t } from '@lezer/highlight';
+import { TabBar } from './tabs';
 
 export interface Theme {
 	background: string;
@@ -38,7 +39,9 @@ export interface Theme {
 	size: string;
 }
 
-export interface LoadArgs {
+export interface OpenArgs {
+	/** The plugin's id for the tab. */
+	id: string;
 	name: string;
 	text: string;
 	theme: Theme;
@@ -47,29 +50,60 @@ export interface LoadArgs {
 export type CloseSource = 'escape' | 'button' | 'mod-w';
 export type Mode = 'edit' | 'view';
 
-export interface PollResult {
+export interface TabText {
+	id: string;
+	text: string;
+}
+
+export interface ClosedTab {
+	id: string;
+	/** Edits the plugin has not seen yet, or null. */
 	text: string | null;
-	/** Set when the user asked to close, naming how. */
+}
+
+export interface PollResult {
+	/** Tabs whose text changed since the last poll. */
+	texts: TabText[];
+	/** Tabs the user closed since the last poll. The page has already removed them. */
+	closed: ClosedTab[];
+	/** Set when the user asked to close the panel, naming how. */
 	close: CloseSource | null;
-	/** True once after the user switched to View: the plugin should render. */
+	/** True once after the active tab switched to View, or showed it with nothing rendered: the plugin should render. */
 	viewRequested: boolean;
+	/** The tab showing, and its mode. */
+	active: string | null;
 	mode: Mode;
 	/** Measurements of the last View load, reported once. */
 	viewDiagnostics: Record<string, unknown> | null;
 }
 
+/** One floating note. */
+interface Tab {
+	id: string;
+	/** The editor state while the tab is in the background. While it shows, the view holds the live one. */
+	state: EditorState;
+	mode: Mode;
+	/** Edits since the last poll. */
+	unpolled: boolean;
+	/** Where the editor was scrolled when the tab was last left. */
+	scroll: ReturnType<EditorView['scrollSnapshot']> | null;
+	/** The last View rendering, and how far down it was read. */
+	srcdoc: string | null;
+	viewScroll: number;
+}
+
 /** Marks a change that came from the vault, so it is not reported back as an edit. */
 const external = Annotation.define<boolean>();
 
-let unpolled = false;
+const tabs = new Map<string, Tab>();
+let active: Tab | null = null;
+let closed: ClosedTab[] = [];
 let closeRequested: CloseSource | null = null;
-let mode: Mode = 'edit';
 let viewRequested = false;
 let viewDiagnostics: Record<string, unknown> | null = null;
 
-function requestClose(source: CloseSource): boolean {
+function requestClose(source: CloseSource): void {
 	closeRequested = source;
-	return true;
 }
 
 /** Styled source: markup stays visible, as in Obsidian's Source mode. Colours and sizes come from Obsidian's theme. */
@@ -145,29 +179,20 @@ function createState(text: string): EditorState {
 			frontmatter,
 			syntaxHighlighting(highlight),
 			theme,
+			// Esc, Cmd+W, Cmd+E and tab switching are onKey's, in Edit and View alike.
 			keymap.of([
-				{ key: 'Escape', run: () => requestClose('escape') },
-				// Electron's menu may claim Cmd+W before the page sees it.
-				{ key: 'Mod-w', run: () => requestClose('mod-w'), preventDefault: true },
-				// Obsidian's own shortcut for switching between editing and reading.
-				{ key: 'Mod-e', run: () => toggleMode(), preventDefault: true },
 				...historyKeymap,
 				...defaultKeymap,
 				indentWithTab,
 			]),
 			EditorView.updateListener.of((update) => {
-				if (update.docChanged && !update.transactions.some((tr) => tr.annotation(external))) unpolled = true;
+				if (active && update.docChanged && !update.transactions.some((tr) => tr.annotation(external))) active.unpolled = true;
 			}),
 		],
 	});
 }
 
 const view = new EditorView({ state: createState(''), parent: document.getElementById('fn-editor') ?? document.body });
-
-function setName(name: string): void {
-	const el = document.getElementById('fn-name');
-	if (el) el.textContent = name;
-}
 
 function applyTheme(theme: Theme): void {
 	const root = document.documentElement.style;
@@ -194,8 +219,15 @@ function applyTheme(theme: Theme): void {
 	for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
 }
 
-document.getElementById('fn-close')?.addEventListener('click', () => requestClose('button'));
 document.getElementById('fn-mode')?.addEventListener('click', () => toggleMode());
+
+const bar = new TabBar(document.getElementById('fn-tabs') ?? document.body, {
+	select: (id) => {
+		const tab = tabs.get(id);
+		if (tab) activate(tab);
+	},
+	close: (id) => closeTab(id, 'button'),
+});
 
 /**
  * View is Obsidian's own rendering, made by the plugin in the main window and
@@ -206,38 +238,116 @@ document.getElementById('fn-mode')?.addEventListener('click', () => toggleMode()
 const frame = document.getElementById('fn-view') as HTMLIFrameElement | null;
 const editorEl = document.getElementById('fn-editor');
 
-function setMode(next: Mode): void {
-	mode = next;
+/** Which tab's rendering the frame holds. */
+let frameTab: Tab | null = null;
+
+function textOf(tab: Tab): string {
+	return (tab === active ? view.state : tab.state).doc.toString();
+}
+
+/** Show a tab: its own editor state - undo history, cursor and scroll - and its own mode. */
+function activate(tab: Tab): void {
+	if (tab !== active) {
+		if (active) {
+			active.state = view.state;
+			active.scroll = view.scrollSnapshot();
+			if (active.mode === 'view' && frameTab === active) active.viewScroll = frame?.contentWindow?.scrollY ?? 0;
+		}
+		active = tab;
+		view.setState(tab.state);
+		if (tab.scroll) view.dispatch({ effects: tab.scroll });
+		bar.setActive(tab.id);
+	}
+	showMode();
+}
+
+/** Move to the next tab along, or back with a negative step, wrapping round. */
+function cycle(step: number): void {
+	const order = bar.order();
+	if (!active || order.length < 2) return;
+	const i = order.indexOf(active.id);
+	const next = tabs.get(order[(i + step + order.length) % order.length] ?? '');
+	if (next) activate(next);
+}
+
+/** Close a tab. The last one closes the panel instead, through the plugin, so it saves first. */
+function closeTab(id: string, source: CloseSource): void {
+	const tab = tabs.get(id);
+	if (!tab) return;
+	if (tabs.size === 1) {
+		requestClose(source);
+		return;
+	}
+	closed.push({ id, text: tab.unpolled ? textOf(tab) : null });
+	removeTab(tab);
+}
+
+/** Take a tab out. If it was showing, its right-hand neighbour shows, or else its left. */
+function removeTab(tab: Tab): void {
+	const order = bar.order();
+	const i = order.indexOf(tab.id);
+	tabs.delete(tab.id);
+	bar.remove(tab.id);
+	if (frameTab === tab) frameTab = null;
+	if (tab !== active) {
+		showMode();
+		return;
+	}
+	active = null;
+	const next = tabs.get(order[i + 1] ?? order[i - 1] ?? '');
+	if (next) activate(next);
+}
+
+/** Put the active tab's mode on screen, and focus it. */
+function showMode(): void {
+	const mode = active?.mode ?? 'edit';
 	const button = document.getElementById('fn-mode');
 	if (button) {
-		button.textContent = next === 'edit' ? 'View' : 'Edit';
-		button.title = next === 'edit' ? 'Show as Obsidian renders it (Cmd+E)' : 'Back to editing (Cmd+E)';
+		button.textContent = mode === 'edit' ? 'View' : 'Edit';
+		button.title = mode === 'edit' ? 'Show as Obsidian renders it (Cmd+E)' : 'Back to editing (Cmd+E)';
 	}
-	if (editorEl) editorEl.style.display = next === 'edit' ? '' : 'none';
-	if (frame) frame.style.display = next === 'view' ? '' : 'none';
-	if (next === 'edit') view.focus();
-}
-
-function toggleMode(): boolean {
+	if (editorEl) editorEl.style.display = mode === 'edit' ? '' : 'none';
+	if (frame) frame.style.display = mode === 'view' ? '' : 'none';
 	if (mode === 'edit') {
-		setMode('view');
-		viewRequested = true;
-		frame?.focus();
-	} else {
-		setMode('edit');
+		view.focus();
+		return;
 	}
-	return true;
+	if (active && frame && frameTab !== active) {
+		// The frame holds another tab's rendering: put this tab's last one in, and ask for one if it has none.
+		frameTab = active;
+		frame.dataset.scroll = String(active.viewScroll);
+		frame.srcdoc = active.srcdoc ?? '';
+		if (active.srcdoc === null) viewRequested = true;
+	}
+	frame?.focus();
 }
 
-/** Esc, Cmd+W and Cmd+E when the editor does not have focus - in View, or in the view's frame. */
+function toggleMode(): void {
+	if (!active) return;
+	active.mode = active.mode === 'edit' ? 'view' : 'edit';
+	if (active.mode === 'view') viewRequested = true;
+	showMode();
+}
+
+/**
+ * The panel's own keys, in Edit and View alike, taken before the editor sees
+ * them. Cmd only: Ctrl+E and the like are the editor's, and the panel is
+ * macOS only.
+ */
 function onKey(event: KeyboardEvent): void {
-	if (mode !== 'view') return;
-	const mod = event.metaKey || event.ctrlKey;
+	if (event.isComposing) return;
+	const key = event.key.toLowerCase();
+	const cmd = event.metaKey && !event.ctrlKey && !event.altKey;
 	if (event.key === 'Escape') requestClose('escape');
-	else if (mod && event.key.toLowerCase() === 'w') requestClose('mod-w');
-	else if (mod && event.key.toLowerCase() === 'e') toggleMode();
+	// Electron's menu may claim Cmd+W before the page sees it.
+	else if (cmd && !event.shiftKey && key === 'w') closeTab(active?.id ?? '', 'mod-w');
+	// Obsidian's own shortcut for switching between editing and reading.
+	else if (cmd && !event.shiftKey && key === 'e') toggleMode();
+	else if (cmd && event.shiftKey && (event.code === 'BracketLeft' || event.code === 'BracketRight')) cycle(event.code === 'BracketLeft' ? -1 : 1);
+	else if (event.ctrlKey && !event.metaKey && event.key === 'Tab') cycle(event.shiftKey ? -1 : 1);
 	else return;
 	event.preventDefault();
+	event.stopPropagation();
 }
 document.addEventListener('keydown', onKey, true);
 
@@ -290,47 +400,73 @@ function diagnose(): Record<string, unknown> {
 }
 
 const api = {
-	/** A new note: fresh state, so undo history does not cross notes. */
-	load(args: LoadArgs): void {
+	/** A note in a new tab at the end, shown at once. Its own state, so undo history stays with its note. */
+	open(args: OpenArgs): void {
 		applyTheme(args.theme);
-		setName(args.name);
-		view.setState(createState(args.text));
-		unpolled = false;
 		closeRequested = null;
-		viewRequested = false;
-		setMode('edit');
+		const tab: Tab = { id: args.id, state: createState(args.text), mode: 'edit', unpolled: false, scroll: null, srcdoc: null, viewScroll: 0 };
+		tabs.set(tab.id, tab);
+		bar.add(tab.id, args.name);
+		activate(tab);
 	},
 
-	/** Edits since the last poll, whether the user asked to close, and whether View wants rendering. */
+	/** Show a tab already open. */
+	activate(id: string): void {
+		const tab = tabs.get(id);
+		if (!tab) return;
+		closeRequested = null;
+		activate(tab);
+	},
+
+	/** Take a tab out without reporting it: its note is gone. */
+	remove(id: string): void {
+		const tab = tabs.get(id);
+		if (tab) removeTab(tab);
+	},
+
+	/** Edits since the last poll, closed tabs, whether the user asked to close, and whether View wants rendering. */
 	poll(): PollResult {
+		const texts: TabText[] = [];
+		for (const tab of tabs.values()) {
+			if (!tab.unpolled) continue;
+			texts.push({ id: tab.id, text: textOf(tab) });
+			tab.unpolled = false;
+		}
 		const result: PollResult = {
-			text: unpolled ? view.state.doc.toString() : null,
+			texts,
+			closed,
 			close: closeRequested,
 			viewRequested,
-			mode,
+			active: active?.id ?? null,
+			mode: active?.mode ?? 'edit',
 			viewDiagnostics,
 		};
-		unpolled = false;
+		closed = [];
 		viewRequested = false;
 		viewDiagnostics = null;
 		return result;
 	},
 
-	/** Show a rendered document in View, keeping the reader's scroll position across re-renders. */
-	showView(srcdoc: string): void {
-		if (!frame || mode !== 'view') return;
-		frame.dataset.scroll = String(frame.contentWindow?.scrollY ?? 0);
+	/** Keep a tab's rendering, and show it if the tab is in View, keeping the reader's scroll position across re-renders. */
+	showView(id: string, srcdoc: string): void {
+		const tab = tabs.get(id);
+		if (!tab) return;
+		tab.srcdoc = srcdoc;
+		if (!frame || tab !== active || tab.mode !== 'view') return;
+		frame.dataset.scroll = String(frameTab === tab ? (frame.contentWindow?.scrollY ?? 0) : tab.viewScroll);
+		frameTab = tab;
 		frame.srcdoc = srcdoc;
 	},
 
 	/**
-	 * Take a change made outside the panel, unless there are edits here the
+	 * Take a change made outside the panel, unless the tab has edits the
 	 * plugin has not seen yet - then the panel wins and the next save
 	 * overwrites it. Only the changed span is replaced, so the cursor stays put.
 	 */
-	replace(text: string): boolean {
-		if (unpolled) return false;
-		const current = view.state.doc.toString();
+	replace(id: string, text: string): boolean {
+		const tab = tabs.get(id);
+		if (!tab || tab.unpolled) return false;
+		const current = textOf(tab);
 		if (current === text) return true;
 		let start = 0;
 		const max = Math.min(current.length, text.length);
@@ -341,14 +477,24 @@ const api = {
 			endCurrent--;
 			endText--;
 		}
-		view.dispatch({
+		const spec = {
 			changes: { from: start, to: endCurrent, insert: text.slice(start, endText) },
 			annotations: external.of(true),
-		});
+		};
+		if (tab === active) {
+			view.dispatch(spec);
+		} else {
+			// Rendered later, when the tab next shows.
+			tab.state = tab.state.update(spec).state;
+			tab.srcdoc = null;
+			if (frameTab === tab) frameTab = null;
+		}
 		return true;
 	},
 
-	setName,
+	setName(id: string, name: string): void {
+		bar.rename(id, name);
+	},
 
 	/** The palette's "Toggle float view", for when the panel does not have focus. */
 	toggleMode,
