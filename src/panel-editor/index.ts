@@ -8,44 +8,30 @@
  * learns about edits and close requests only by polling - nothing here calls
  * out, so there is no channel to set up and nothing to leak.
  */
-import { Annotation, EditorState, RangeSetBuilder, StateField } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView, drawSelection, keymap } from '@codemirror/view';
+import { Annotation, Compartment, EditorState, Extension } from '@codemirror/state';
+import { EditorView, drawSelection, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { yamlFrontmatter } from '@codemirror/lang-yaml';
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
-import { tags as t } from '@lezer/highlight';
+import { syntaxHighlighting } from '@codemirror/language';
+import { frontmatter } from './frontmatter';
+import { livePreview } from './live-preview';
+import { markdownSyntax } from './syntax';
+import { Theme, applyTheme, editorTheme, highlight } from './theme';
 
-export interface Theme {
-	background: string;
-	text: string;
-	muted: string;
-	accent: string;
-	link: string;
-	bold: string;
-	italic: string;
-	quote: string;
-	quoteStyle: string;
-	/** h1 to h6, colour and size each. */
-	headingColours: string[];
-	headingSizes: string[];
-	yamlKey: string;
-	border: string;
-	selection: string;
-	codeBackground: string;
-	font: string;
-	monospace: string;
-	size: string;
-}
+export type { Theme } from './theme';
+
+/** How the note is edited: Obsidian's Source mode or Live Preview. */
+export type EditingMode = 'source' | 'live';
+export type Mode = EditingMode | 'view';
 
 export interface LoadArgs {
 	name: string;
 	text: string;
 	theme: Theme;
+	/** Obsidian's default editing mode, which the panel follows. */
+	editingMode: EditingMode;
 }
 
 export type CloseSource = 'escape' | 'button' | 'mod-w';
-export type Mode = 'edit' | 'view';
 
 export interface PollResult {
 	text: string | null;
@@ -61,9 +47,15 @@ export interface PollResult {
 /** Marks a change that came from the vault, so it is not reported back as an edit. */
 const external = Annotation.define<boolean>();
 
+/** Holds livePreview in Live Preview and nothing in Source. */
+const preview = new Compartment();
+const sourceMode: Extension = [];
+
 let unpolled = false;
 let closeRequested: CloseSource | null = null;
-let mode: Mode = 'edit';
+let mode: Mode = 'live';
+/** The editing mode View returns to. */
+let editingMode: EditingMode = 'live';
 let viewRequested = false;
 let viewDiagnostics: Record<string, unknown> | null = null;
 
@@ -72,79 +64,18 @@ function requestClose(source: CloseSource): boolean {
 	return true;
 }
 
-/** Styled source: markup stays visible, as in Obsidian's Source mode. Colours and sizes come from Obsidian's theme. */
-const headingTags = [t.heading1, t.heading2, t.heading3, t.heading4, t.heading5, t.heading6];
-const highlight = HighlightStyle.define([
-	...headingTags.map((tag, i) => ({
-		tag,
-		fontSize: `var(--fn-h${i + 1}-size)`,
-		color: `var(--fn-h${i + 1}-colour)`,
-		fontWeight: '700',
-	})),
-	{ tag: t.strong, fontWeight: '700', color: 'var(--fn-bold)' },
-	{ tag: t.emphasis, fontStyle: 'italic', color: 'var(--fn-italic)' },
-	{ tag: t.strikethrough, textDecoration: 'line-through' },
-	{ tag: t.monospace, fontFamily: 'var(--fn-monospace)', backgroundColor: 'var(--fn-code-background)', borderRadius: '3px' },
-	{ tag: [t.link, t.url], color: 'var(--fn-link)' },
-	{ tag: [t.processingInstruction, t.contentSeparator, t.labelName, t.atom, t.meta], color: 'var(--fn-muted)' },
-	{ tag: t.quote, color: 'var(--fn-quote)', fontStyle: 'var(--fn-quote-style)' },
-	// Frontmatter keys, from the YAML parser.
-	{ tag: t.definition(t.propertyName), color: 'var(--fn-yaml-key)' },
-]);
-
-/**
- * Frontmatter lines in monospace, as Obsidian's Source mode shows them. Found
- * by text rather than the syntax tree: a leading `---` line and the next
- * `---`, within the first 200 lines.
- */
-const frontmatterLine = Decoration.line({ class: 'fn-frontmatter' });
-
-function frontmatterDecorations(state: EditorState): DecorationSet {
-	const doc = state.doc;
-	if (doc.lines < 2 || doc.line(1).text.trimEnd() !== '---') return Decoration.none;
-	const last = Math.min(doc.lines, 200);
-	for (let n = 2; n <= last; n++) {
-		if (doc.line(n).text.trimEnd() !== '---') continue;
-		const builder = new RangeSetBuilder<Decoration>();
-		for (let i = 1; i <= n; i++) builder.add(doc.line(i).from, doc.line(i).from, frontmatterLine);
-		return builder.finish();
-	}
-	return Decoration.none;
-}
-
-const frontmatter = StateField.define<DecorationSet>({
-	create: frontmatterDecorations,
-	update: (value, tr) => (tr.docChanged ? frontmatterDecorations(tr.state) : value),
-	provide: (field) => EditorView.decorations.from(field),
-});
-
-const theme = EditorView.theme({
-	'&': { height: '100%', backgroundColor: 'var(--fn-background)', color: 'var(--fn-text)', fontSize: 'var(--fn-size)' },
-	'&.cm-focused': { outline: 'none' },
-	'.cm-scroller': { fontFamily: 'var(--fn-font)', lineHeight: '1.5', padding: '8px 0' },
-	'.cm-content': { padding: '0 14px', caretColor: 'var(--fn-text)' },
-	'.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--fn-text)' },
-	'.fn-frontmatter': { fontFamily: 'var(--fn-monospace)', fontSize: '0.85em' },
-	'&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
-		backgroundColor: 'var(--fn-selection)',
-	},
-});
-
-function createState(text: string): EditorState {
+function createState(text: string, editing: EditingMode): EditorState {
 	return EditorState.create({
 		doc: text,
 		extensions: [
 			history(),
 			drawSelection(),
 			EditorView.lineWrapping,
-			// GFM base, for strikethrough, task lists and tables. markdown() adds
-			// its own keymap, which continues lists on Enter. Wrapped so a YAML
-			// frontmatter block is parsed as YAML: plain Markdown reads its closing
-			// `---` as a setext underline and turns the block into a heading.
-			yamlFrontmatter({ content: markdown({ base: markdownLanguage }) }),
+			markdownSyntax(),
 			frontmatter,
 			syntaxHighlighting(highlight),
-			theme,
+			editorTheme,
+			preview.of(editing === 'live' ? livePreview : sourceMode),
 			keymap.of([
 				{ key: 'Escape', run: () => requestClose('escape') },
 				// Electron's menu may claim Cmd+W before the page sees it.
@@ -162,36 +93,11 @@ function createState(text: string): EditorState {
 	});
 }
 
-const view = new EditorView({ state: createState(''), parent: document.getElementById('fn-editor') ?? document.body });
+const view = new EditorView({ state: createState('', editingMode), parent: document.getElementById('fn-editor') ?? document.body });
 
 function setName(name: string): void {
 	const el = document.getElementById('fn-name');
 	if (el) el.textContent = name;
-}
-
-function applyTheme(theme: Theme): void {
-	const root = document.documentElement.style;
-	const vars: Record<string, string> = {
-		'--fn-background': theme.background,
-		'--fn-text': theme.text,
-		'--fn-muted': theme.muted,
-		'--fn-accent': theme.accent,
-		'--fn-link': theme.link,
-		'--fn-bold': theme.bold,
-		'--fn-italic': theme.italic,
-		'--fn-quote': theme.quote,
-		'--fn-quote-style': theme.quoteStyle,
-		'--fn-yaml-key': theme.yamlKey,
-		'--fn-border': theme.border,
-		'--fn-selection': theme.selection,
-		'--fn-code-background': theme.codeBackground,
-		'--fn-font': theme.font,
-		'--fn-monospace': theme.monospace,
-		'--fn-size': theme.size,
-	};
-	theme.headingColours.forEach((colour, i) => (vars[`--fn-h${i + 1}-colour`] = colour));
-	theme.headingSizes.forEach((size, i) => (vars[`--fn-h${i + 1}-size`] = size));
-	for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
 }
 
 document.getElementById('fn-close')?.addEventListener('click', () => requestClose('button'));
@@ -208,24 +114,38 @@ const editorEl = document.getElementById('fn-editor');
 
 function setMode(next: Mode): void {
 	mode = next;
+	if (next !== 'view') setEditingMode(next);
 	const button = document.getElementById('fn-mode');
 	if (button) {
-		button.textContent = next === 'edit' ? 'View' : 'Edit';
-		button.title = next === 'edit' ? 'Show as Obsidian renders it (Cmd+E)' : 'Back to editing (Cmd+E)';
+		button.textContent = next === 'view' ? 'Edit' : 'View';
+		button.title = next === 'view' ? 'Back to editing (Cmd+E)' : 'Show as Obsidian renders it (Cmd+E)';
 	}
-	if (editorEl) editorEl.style.display = next === 'edit' ? '' : 'none';
+	if (editorEl) editorEl.style.display = next === 'view' ? 'none' : '';
 	if (frame) frame.style.display = next === 'view' ? '' : 'none';
-	if (next === 'edit') view.focus();
+	if (next !== 'view') view.focus();
 }
 
+function setEditingMode(next: EditingMode): void {
+	editingMode = next;
+	const wanted = next === 'live' ? livePreview : sourceMode;
+	if (preview.get(view.state) !== wanted) view.dispatch({ effects: preview.reconfigure(wanted) });
+}
+
+/** Cmd+E: between editing, in whichever mode it was last in, and View. */
 function toggleMode(): boolean {
-	if (mode === 'edit') {
+	if (mode === 'view') {
+		setMode(editingMode);
+	} else {
 		setMode('view');
 		viewRequested = true;
 		frame?.focus();
-	} else {
-		setMode('edit');
 	}
+	return true;
+}
+
+/** Between Live Preview and Source, as Obsidian's command of that name. From View, back to editing. */
+function toggleSource(): boolean {
+	setMode(editingMode === 'live' ? 'source' : 'live');
 	return true;
 }
 
@@ -294,11 +214,11 @@ const api = {
 	load(args: LoadArgs): void {
 		applyTheme(args.theme);
 		setName(args.name);
-		view.setState(createState(args.text));
+		view.setState(createState(args.text, args.editingMode));
 		unpolled = false;
 		closeRequested = null;
 		viewRequested = false;
-		setMode('edit');
+		setMode(args.editingMode);
 	},
 
 	/** Edits since the last poll, whether the user asked to close, and whether View wants rendering. */
@@ -352,6 +272,9 @@ const api = {
 
 	/** The palette's "Toggle float view", for when the panel does not have focus. */
 	toggleMode,
+
+	/** The palette's "Toggle float source mode". */
+	toggleSource,
 };
 
 (window as unknown as { floatNote: typeof api }).floatNote = api;

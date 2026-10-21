@@ -1,7 +1,7 @@
 import { DataAdapter, FileSystemAdapter } from 'obsidian';
 import editorScript from 'virtual:panel-editor';
 import { Bounds, NativeWindow, createWindow, isAlive, onSomeDisplay, safe, windowsTitled } from './native';
-import type { CloseSource, LoadArgs, PollResult, Theme } from './panel-editor';
+import type { CloseSource, EditingMode, LoadArgs, Mode, PollResult, Theme } from './panel-editor';
 import type { FloatNoteSettings } from './settings';
 
 export type Log = (event: string, extra?: Record<string, unknown>) => void;
@@ -20,6 +20,7 @@ const POLL_MS = 300;
 export interface PanelContent {
 	name: string;
 	text: string;
+	editingMode: EditingMode;
 }
 
 export interface PanelEvents {
@@ -64,7 +65,7 @@ export class FloatPanel {
 	private pollTimer: number | null = null;
 	private inflight: Promise<void> | null = null;
 	/** What the page showed at the last poll. */
-	mode: 'edit' | 'view' = 'edit';
+	mode: Mode = 'live';
 	private lastBounds: Bounds | null = null;
 
 	private constructor(
@@ -108,6 +109,7 @@ export class FloatPanel {
 			webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, spellcheck: false },
 		});
 		const panel = new FloatPanel(native, log, events);
+		panel.mode = content.editingMode;
 		// Flags first, while hidden, so the window is ordered in with them.
 		panel.applyFlags();
 		panel.setOpacity(settings().opacity);
@@ -125,7 +127,7 @@ export class FloatPanel {
 
 	/** Re-target to another note. */
 	async show(content: PanelContent): Promise<void> {
-		this.mode = 'edit';
+		this.mode = content.editingMode;
 		await this.load(content, readTheme());
 		this.present();
 	}
@@ -137,6 +139,10 @@ export class FloatPanel {
 
 	async toggleMode(): Promise<void> {
 		await this.exec('window.floatNote.toggleMode()');
+	}
+
+	async toggleSource(): Promise<void> {
+		await this.exec('window.floatNote.toggleSource()');
 	}
 
 	async showView(srcdoc: string): Promise<void> {

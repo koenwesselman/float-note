@@ -1,4 +1,5 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile } from 'obsidian';
+import { readEditingMode } from './editing-mode';
 import type { Bounds } from './native';
 import { FloatPanel, sweepOrphanPanels, writePanelPage } from './panel';
 import { DEFAULT_SETTINGS, FloatNoteSettings, FloatNoteSettingTab } from './settings';
@@ -76,6 +77,16 @@ export default class FloatNotePlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: 'toggle-float-source-mode',
+			name: 'Toggle float source mode',
+			checkCallback: (checking) => {
+				if (!this.panel) return false;
+				if (!checking) void this.panel.toggleSource();
+				return true;
+			},
+		});
+
 		this.registerEvent(this.app.vault.on('modify', (file) => this.onVaultModify(file)));
 		this.registerEvent(
 			this.app.vault.on('rename', (file) => {
@@ -132,7 +143,7 @@ export default class FloatNotePlugin extends Plugin {
 				await this.saveNow();
 				const text = await this.app.vault.read(file);
 				this.binding = { file, lastWritten: text, pending: null, changedAt: 0 };
-				await this.panel.show({ name: file.basename, text });
+				await this.panel.show({ name: file.basename, text, editingMode: readEditingMode(this.app) });
 				this.log('panel-retargeted', { path: file.path });
 				return;
 			}
@@ -143,7 +154,7 @@ export default class FloatNotePlugin extends Plugin {
 			this.binding = { file, lastWritten: text, pending: null, changedAt: 0 };
 			this.panel = await FloatPanel.open(
 				this.pagePath,
-				{ name: file.basename, text },
+				{ name: file.basename, text, editingMode: readEditingMode(this.app) },
 				() => this.settings,
 				(event, extra) => this.log(event, extra),
 				{
