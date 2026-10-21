@@ -84,6 +84,7 @@ npm run build
     <Vault>/.obsidian/plugins/<plugin-id>/
     ```
 - Reload Obsidian and enable the plugin in **Settings → Community plugins**.
+- Unit tests: `npm test` runs vitest on `test/`. They cover the panel's Live Preview decorations, which are pure functions of an editor state, so they run without Obsidian.
 
 ## Commands & settings
 
