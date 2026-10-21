@@ -18,15 +18,16 @@ import { setRenderedLanguages } from './live-preview/fences';
 import { linkClicks, setUnresolved, takeOpenRequest, unresolvedField } from './live-preview/links';
 import type { LinkTarget, OpenRequest } from './live-preview/links';
 import { noteId } from './live-preview/note';
-import { clearRendered, notifyRendered, setStylesheet, storeRendered, takeRenderRequests } from './live-preview/render';
+import { clearRendered, invalidateRendered, notifyRendered, setStylesheet, storeRendered, takeRenderRequests } from './live-preview/render';
 import type { Rendered, RenderRequest, Stylesheet } from './live-preview/render';
 import { reveal, syncFocus } from './live-preview/reveal';
 import { frame, watchFrame } from './reading';
 import { markdownSyntax } from './syntax';
+import { drawModeButton, setIcons } from './chrome';
 import { TabBar } from './tabs';
 import { Theme, applyTheme, editorTheme, highlight } from './theme';
 
-export type { CalloutStyle, Theme } from './theme';
+export type { CalloutStyle, StripStyle, Theme, TokenStyle } from './theme';
 export type { LinkTarget, OpenRequest, Rendered, RenderRequest, Stylesheet };
 
 /** How a tab is edited: Obsidian's Source mode or Live Preview. */
@@ -225,11 +226,7 @@ function removeTab(tab: Tab): void {
 /** Put the active tab's mode on screen, and focus it. */
 function showMode(): void {
 	const mode = active?.mode ?? 'live';
-	const button = document.getElementById('fn-mode');
-	if (button) {
-		button.textContent = mode === 'view' ? 'Edit' : 'View';
-		button.title = mode === 'view' ? 'Back to editing (Cmd+E)' : 'Show as Obsidian renders it (Cmd+E)';
-	}
+	drawModeButton(mode);
 	if (editorEl) editorEl.style.display = mode === 'view' ? 'none' : '';
 	if (frame) frame.style.display = mode === 'view' ? '' : 'none';
 	if (mode !== 'view') {
@@ -298,6 +295,7 @@ const api = {
 	/** A note in a new tab at the end, shown at once. Its own state, so undo history stays with its note. */
 	open(args: OpenArgs): void {
 		applyTheme(args.theme);
+		setIcons(args.theme.strip.icons, args.editingMode);
 		setRenderedLanguages(args.renderedLanguages);
 		closeRequested = null;
 		const state = createState(args.id, args.text, args.editingMode, args.unresolved);
@@ -389,6 +387,25 @@ const api = {
 			if (frameTab === tab) frameTab = null;
 		}
 		return true;
+	},
+
+	/**
+	 * Obsidian's theme changed. The editor and strip follow at once, through
+	 * their variables; renderings made under the old theme are redrawn - View
+	 * for the tab showing it now, the others' when they next show.
+	 */
+	setTheme(theme: Theme): void {
+		applyTheme(theme);
+		setIcons(theme.strip.icons, active?.mode ?? 'live');
+		for (const tab of tabs.values()) {
+			if (tab === active && tab.mode === 'view') continue;
+			tab.srcdoc = null;
+			if (frameTab === tab) frameTab = null;
+		}
+		if (active?.mode === 'view') viewRequested = true;
+		invalidateRendered();
+		// Also redraws callouts, whose colours and icons are in their decorations.
+		notifyRendered(view);
 	},
 
 	/** Obsidian's renderings of blocks Live Preview asked for. */

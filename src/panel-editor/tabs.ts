@@ -2,6 +2,7 @@
  * The panel's tab strip: one tab per floating note, in the order the user
  * drags them into. Only the DOM lives here - what a tab holds is index.ts's.
  */
+import { drawClose } from './chrome';
 
 export interface TabBarEvents {
 	/** A tab was pressed. */
@@ -43,6 +44,7 @@ export class TabBar {
 		const close = el?.querySelector<HTMLElement>('.fn-tab-close');
 		if (!el || !label || !close) return;
 		el.dataset.id = id;
+		drawClose(close);
 		close.addEventListener('pointerdown', (event) => {
 			event.stopPropagation();
 			event.preventDefault();

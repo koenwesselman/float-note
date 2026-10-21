@@ -94,7 +94,7 @@ Float Note relies on parts of Obsidian and Electron that are not public, stable 
 - **Electron's `type: 'panel'` window.** On macOS this is what lets the panel float over full-screen apps while Obsidian keeps its Dock icon. An ordinary window cannot do that.
 - **`MarkdownRenderer.render`** is public API, but what View and Live Preview's rendered blocks show depends on what it produces. A few things are then patched in the copied output: callout icons, `app://` image paths, and the `contain: strict` Obsidian puts on `body`.
 - **`vault.getConfig('livePreview')`**, for your default editing mode, and **`MarkdownPreviewRenderer.codeBlockPostProcessors`**, for which code blocks plugins draw. Without them the panel opens in Live Preview and renders a fixed list of common code block languages.
-- **Obsidian's CSS class names and variables** (`.markdown-source-view`, `.cm-strong`, `.cm-header-1`, `.cm-hmd-frontmatter`, `.callout`, `--callout-color` and others). The panel's colours are measured from hidden copies of Obsidian's editor and callout markup, so they follow your theme, but only while those classes exist.
+- **Obsidian's CSS class names and variables** (`.markdown-source-view`, `.cm-strong`, `.cm-header-1`, `.cm-hmd-frontmatter`, `.callout`, `.workspace-tab-header`, `--callout-color` and others). The panel's colours are measured from hidden copies of Obsidian's editor, callout and tab markup, so they follow your theme, and change with it, but only while those classes exist.
 
 If an update breaks something, switch on **Debug log**, reproduce the problem and [open an issue](https://github.com/koenwesselman/float-note/issues) with the contents of `debug.log`. Check it first: it records panel, view and close events, and the note's file path.
 

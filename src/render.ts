@@ -90,7 +90,8 @@ export function cssFingerprint(): string {
 			// A sheet whose rules cannot be read is skipped by collectCss too.
 		}
 	}
-	return `${document.styleSheets.length}:${rules}:${document.body.className}`;
+	// The body's inline style holds the accent colour, set without touching any sheet.
+	return `${document.styleSheets.length}:${rules}:${document.body.className}:${document.body.getAttribute('style') ?? ''}`;
 }
 
 /**
