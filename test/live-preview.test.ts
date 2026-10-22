@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { escapePipes } from '../src/panel-editor/live-preview/cell-editor';
 import { linkAt } from '../src/panel-editor/live-preview/links';
+import { tableAt, tableRows } from '../src/panel-editor/live-preview/table';
 import { blocks, inline, state } from './helpers';
 
 describe('inline markup', () => {
@@ -140,5 +142,40 @@ describe('linkAt', () => {
 
 	it('finds nothing outside links', () => {
 		expect(at('plain ^text')).toBeNull();
+	});
+});
+
+describe('tables', () => {
+	const rows = (doc: string) => {
+		const s = state(doc);
+		const node = tableAt(s, 0);
+		return node ? tableRows(s, node).map((r) => r.cells.map((c) => s.sliceDoc(c.from, c.to))) : null;
+	};
+
+	it('counts empty cells, which have no node of their own', () => {
+		expect(rows('|  | Copilot | Claude |\n| --- | --- | --- |\n| Cost |  | Teams |')).toEqual([
+			['', 'Copilot', 'Claude'],
+			['Cost', '', 'Teams'],
+		]);
+	});
+
+	it('reads rows without leading or trailing pipes, and keeps escaped pipes in their cell', () => {
+		expect(rows('a | b\n--- | ---\nx \\| y | z')).toEqual([
+			['a', 'b'],
+			['x \\| y', 'z'],
+		]);
+	});
+
+	it('puts text typed into an empty cell after one space', () => {
+		const s = state('| a |  |\n| - | - |');
+		const node = tableAt(s, 0);
+		const empty = node ? tableRows(s, node)[0]?.cells[1] : undefined;
+		expect(empty && [empty.from, empty.to]).toEqual([6, 6]);
+	});
+
+	it('escapes pipes typed into a cell, but not ones already escaped', () => {
+		expect(escapePipes('a|b', '')).toBe('a\\|b');
+		expect(escapePipes('|', '\\')).toBe('|');
+		expect(escapePipes('a\\|b', '')).toBe('a\\|b');
 	});
 });

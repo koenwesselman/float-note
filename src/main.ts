@@ -1,6 +1,6 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile } from 'obsidian';
 import { readEditingMode } from './editing-mode';
-import { openLink, renderedLanguages, unresolvedLinks } from './links';
+import { linkedNote, openLink, renderedLanguages, unresolvedLinks } from './links';
 import type { Bounds } from './native';
 import { Binding, Notes } from './notes';
 import { FloatPanel, TabContent, sweepOrphanPanels, writePanelPage } from './panel';
@@ -137,6 +137,11 @@ export default class FloatNotePlugin extends Plugin {
 			new Notice('Float Note: no active note to float.');
 			return;
 		}
+		await this.floatFile(file);
+	}
+
+	/** Float a note: in its tab if it is already floating, in a new tab if the panel is open, or in a new panel. */
+	async floatFile(file: TFile): Promise<void> {
 		if (this.busy) return;
 		this.busy = true;
 		try {
@@ -183,7 +188,10 @@ export default class FloatNotePlugin extends Plugin {
 					onOpenLink: (request) => {
 						const b = this.notes.get(request.tab);
 						this.log('link-opened', { external: request.external });
-						if (b) openLink(this.app, b.file, request);
+						if (!b) return;
+						const note = linkedNote(this.app, b.file, request);
+						if (note) void this.floatFile(note);
+						else openLink(this.app, b.file, request);
 					},
 					onBounds: (bounds) => this.rememberBounds(bounds),
 					onTick: () => this.notes.writeIdle(),

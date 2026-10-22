@@ -1,8 +1,19 @@
-import { App, MarkdownPreviewRenderer, TFile } from 'obsidian';
+import { App, MarkdownPreviewRenderer, TFile, getLinkpath } from 'obsidian';
 import { focusMainWindow } from './native';
 import type { LinkTarget } from './panel-editor';
 
-/** Open a link Cmd+clicked in the panel: a note in a new tab of the main window, as Cmd+click does in Obsidian, or a URL in its app. */
+/**
+ * The note a link Cmd+clicked in the panel goes to, to float in the panel
+ * itself: a Markdown note that exists. Null for anything else - a URL, a
+ * note not created yet, a PDF or image - which openLink hands to Obsidian.
+ */
+export function linkedNote(app: App, file: TFile, link: LinkTarget): TFile | null {
+	if (link.external) return null;
+	const dest = app.metadataCache.getFirstLinkpathDest(getLinkpath(link.target), file.path);
+	return dest?.extension === 'md' ? dest : null;
+}
+
+/** Open a link the panel does not float itself: a URL in its app, anything else in a new tab of Obsidian's main window, which creates a note not there yet. */
 export function openLink(app: App, file: TFile, link: LinkTarget): void {
 	if (link.external) {
 		window.open(link.target);
