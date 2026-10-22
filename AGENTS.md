@@ -92,6 +92,15 @@ npm run build
 - Persist settings using `this.loadData()` / `this.saveData()`.
 - Use stable command IDs; avoid renaming once released.
 
+## Branches
+
+All work happens on a branch, never on `main`. Koen runs the Obsidian community review against the branch before anything is released, and the community directory reads `manifest.json` from `main`, so `main` holds only code he has reviewed.
+
+- Start each piece of work on a new branch from an up-to-date `main`, named for the work: `fix/<name>` or `feature/<name>`, for example `fix/attestation`.
+- Commit to the branch and push it, so Koen can run the review against it. Report the branch name when a phase or change is ready.
+- Merge into `main` only when Koen approves the merge. Approving the work is not approving the merge.
+- The version bump and tag come after the merge, on `main`, under the approval rule in **Versioning & releases**.
+
 ## Versioning & releases
 
 **No release ships without Koen's explicit approval, every time.** Approval for one release, or for the change that goes into it, is not approval to ship. Prepare the release and stop. Ask before any step that starts or publishes one:
@@ -161,6 +170,7 @@ Follow Obsidian's **Developer Policies** and **Plugin Guidelines**. In particula
 
 **Don't**
 
+- Commit to `main`, or merge into it without Koen's approval - see **Branches**.
 - Bump the version, push a tag or publish a release without Koen's explicit approval for that release - see **Versioning & releases**.
 - Introduce network calls without an obvious user-facing reason and documentation.
 - Ship features that require cloud services without clear disclosure and explicit opt-in.
