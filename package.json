@@ -1,6 +1,6 @@
 {
 	"name": "float-note",
-	"version": "0.7.2",
+	"version": "0.8.0",
 	"description": "Always-on-top note overlay for Obsidian on macOS",
 	"main": "main.js",
 	"type": "module",
