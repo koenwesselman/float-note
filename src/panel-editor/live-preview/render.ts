@@ -99,11 +99,16 @@ export interface Stylesheet {
 	css: string;
 	/** The main window's body classes - theme-dark and the like - which Obsidian's selectors expect. */
 	bodyClass: string;
+	/** The main window's body inline style, which holds the accent colour. */
+	bodyStyle: string;
 }
 
-export function setStylesheet(sheet: Stylesheet): void {
-	adoptable().obsidian.replaceSync(sheet.css);
+/** Take Obsidian's stylesheet, and return it as a sheet the page can adopt too. */
+export function setStylesheet(sheet: Stylesheet): CSSStyleSheet {
+	const { obsidian } = adoptable();
+	obsidian.replaceSync(sheet.css);
 	bodyClass = sheet.bodyClass;
+	return obsidian;
 }
 
 /** Cmd+click on a link in a rendering opens it; a plain click on one does nothing, as it would navigate the panel. */

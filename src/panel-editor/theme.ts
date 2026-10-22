@@ -59,7 +59,6 @@ export interface Theme {
 	tagBackground: string;
 	unresolvedColour: string;
 	unresolvedOpacity: string;
-	listMarker: string;
 	doneColour: string;
 	doneDecoration: string;
 	quoteBorder: string;
@@ -106,8 +105,9 @@ export const highlight = HighlightStyle.define([
 export const editorTheme = EditorView.theme({
 	'&': { height: '100%', backgroundColor: 'var(--fn-background)', color: 'var(--fn-text)', fontSize: 'var(--fn-size)' },
 	'&.cm-focused': { outline: 'none' },
-	'.cm-scroller': { fontFamily: 'var(--fn-font)', lineHeight: '1.5', padding: '8px 0' },
-	'.cm-content': { padding: '0 14px', caretColor: 'var(--fn-caret)' },
+	// The side margin is the scroller's: Obsidian's CSS, once it arrives, sets the content's padding to 0.
+	'.cm-scroller': { fontFamily: 'var(--fn-font)', lineHeight: '1.5', padding: '8px 14px' },
+	'.cm-content': { padding: '0', caretColor: 'var(--fn-caret)' },
 	'.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--fn-caret)' },
 	'.fn-frontmatter': { fontFamily: 'var(--fn-monospace)', fontSize: '0.85em' },
 	'&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
@@ -118,7 +118,6 @@ export const editorTheme = EditorView.theme({
 	'.fn-link': { color: 'var(--fn-link)', textDecoration: 'underline', textUnderlineOffset: '2px' },
 	'.fn-unresolved': { color: 'var(--fn-unresolved-colour)', opacity: 'var(--fn-unresolved-opacity)' },
 	'.fn-quote': { borderLeft: 'var(--fn-quote-border-width) solid var(--fn-quote-border)', paddingLeft: '12px' },
-	'.fn-bullet': { color: 'var(--fn-list-marker)' },
 	'.fn-checkbox': {
 		display: 'inline-block',
 		position: 'relative',
@@ -206,7 +205,6 @@ export function applyTheme(theme: Theme): void {
 		'--fn-tag-background': theme.tagBackground,
 		'--fn-unresolved-colour': theme.unresolvedColour,
 		'--fn-unresolved-opacity': theme.unresolvedOpacity,
-		'--fn-list-marker': theme.listMarker,
 		'--fn-done-colour': theme.doneColour,
 		'--fn-done-decoration': theme.doneDecoration,
 		'--fn-quote-border': theme.quoteBorder,

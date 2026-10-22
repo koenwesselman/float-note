@@ -108,7 +108,10 @@ export async function collectCss(): Promise<string> {
 		} catch {
 			continue;
 		}
-		let text = Array.from(rules, (rule) => rule.cssText).join('\n');
+		// Obsidian's own CodeMirror styles, whose generated class names - ͼ1, ͼ2 - the panel's CodeMirror generates too.
+		let text = Array.from(rules, (rule) => rule.cssText)
+			.filter((rule) => !rule.includes('ͼ'))
+			.join('\n');
 		if (sheet.href) text = absoluteUrls(text, sheet.href);
 		parts.push(text);
 	}
@@ -117,13 +120,15 @@ export async function collectCss(): Promise<string> {
 }
 
 /**
- * Obsidian's CSS for Live Preview's renderings, which sit in shadow roots in
- * the panel. Obsidian defines its variables on `body` and `.theme-dark` and
- * the like, selectors nothing in a shadow root matches; so every custom
- * property the stylesheets name is resolved here, on the main window's body,
- * and set on the class the renderings carry.
+ * Obsidian's CSS for the panel: its editor, styled by Obsidian's rules for
+ * its own, and Live Preview's renderings in shadow roots. Obsidian defines
+ * its variables on `body` and `.theme-dark` and the like, selectors nothing
+ * in a shadow root matches; so every custom property the stylesheets name is
+ * also resolved here, on the main window's body, and set on the class the
+ * renderings carry. The body's classes and inline style go too, for the
+ * panel's own body.
  */
-export async function shadowStylesheet(): Promise<{ css: string; bodyClass: string }> {
+export async function shadowStylesheet(): Promise<{ css: string; bodyClass: string; bodyStyle: string }> {
 	const css = await collectCss();
 	const names = new Set(Array.from(css.matchAll(/(--[\w-]+)\s*:/g), (m) => m[1] ?? ''));
 	const computed = getComputedStyle(document.body);
@@ -132,7 +137,7 @@ export async function shadowStylesheet(): Promise<{ css: string; bodyClass: stri
 		const value = name ? computed.getPropertyValue(name).trim() : '';
 		if (value) vars.push(`${name}: ${value};`);
 	}
-	return { css: `${css}\n.fn-obsidian { ${vars.join(' ')} }`, bodyClass: document.body.className };
+	return { css: `${css}\n.fn-obsidian { ${vars.join(' ')} }`, bodyClass: document.body.className, bodyStyle: document.body.getAttribute('style') ?? '' };
 }
 
 /** app:// images fetched once per session, as data URLs. */
