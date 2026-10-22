@@ -86,47 +86,78 @@ export class TabBar {
 
 	/**
 	 * Select on press; past the threshold, drag. The dragged tab follows the
-	 * pointer and takes a neighbour's place once its middle crosses the
-	 * neighbour's.
+	 * pointer, kept within the row of tabs, and takes a neighbour's place once
+	 * its middle crosses the neighbour's.
+	 *
+	 * Moving the tab in the DOM drops its pointer capture, so the capture is
+	 * taken again after each move, and the drag is followed on the document:
+	 * a release away from the tab - over the strip's window-drag area, say -
+	 * still ends it.
 	 */
 	private press(el: HTMLElement, id: string, event: PointerEvent): void {
 		if (event.button !== 0) return;
 		// Keeps focus in the editor, which select() hands it to.
 		event.preventDefault();
 		this.events.select(id);
+		const pointer = event.pointerId;
 		const startX = event.clientX;
 		const grab = startX - el.getBoundingClientRect().left;
+		const doc = el.ownerDocument;
 		let dragging = false;
 		let shift = 0;
-		el.setPointerCapture(event.pointerId);
+		el.setPointerCapture(pointer);
 
 		const move = (e: PointerEvent) => {
+			if (e.pointerId !== pointer) return;
 			if (!dragging) {
 				if (Math.abs(e.clientX - startX) < DRAG_THRESHOLD_PX) return;
 				dragging = true;
 				el.classList.add('is-dragging');
 			}
 			this.scrollNearEdge(e.clientX);
-			this.reorder(el, e.clientX - grab + el.offsetWidth / 2);
+			if (this.reorder(el, e.clientX - grab + el.offsetWidth / 2)) recapture();
 			// Where the tab sits in the strip now, without the shift already applied.
 			const slot = el.getBoundingClientRect().left - shift;
-			shift = e.clientX - grab - slot;
+			const { left, right } = this.extent(el, shift);
+			const target = Math.min(Math.max(e.clientX - grab, left), right - el.offsetWidth);
+			shift = target - slot;
 			el.style.setProperty('--fn-shift', `${shift}px`);
 		};
-		const end = () => {
-			el.removeEventListener('pointermove', move);
-			el.removeEventListener('pointerup', end);
-			el.removeEventListener('pointercancel', end);
+		const recapture = () => {
+			try {
+				el.setPointerCapture(pointer);
+			} catch {
+				// The pointer is already up; the document listeners end the drag.
+			}
+		};
+		const end = (e: PointerEvent) => {
+			if (e.pointerId !== pointer) return;
+			doc.removeEventListener('pointermove', move, true);
+			doc.removeEventListener('pointerup', end, true);
+			doc.removeEventListener('pointercancel', end, true);
 			el.classList.remove('is-dragging');
 			el.style.removeProperty('--fn-shift');
 		};
-		el.addEventListener('pointermove', move);
-		el.addEventListener('pointerup', end);
-		el.addEventListener('pointercancel', end);
+		doc.addEventListener('pointermove', move, true);
+		doc.addEventListener('pointerup', end, true);
+		doc.addEventListener('pointercancel', end, true);
 	}
 
-	/** Put the dragged tab before the first other tab whose middle is right of `centre`. */
-	private reorder(el: HTMLElement, centre: number): void {
+	/** The left of the first tab and the right of the last, as laid out - the dragged tab's own shift taken out. */
+	private extent(dragged: HTMLElement, shift: number): { left: number; right: number } {
+		let left = Infinity;
+		let right = -Infinity;
+		for (const child of Array.from(this.strip.children)) {
+			const r = child.getBoundingClientRect();
+			const offset = child === dragged ? shift : 0;
+			left = Math.min(left, r.left - offset);
+			right = Math.max(right, r.right - offset);
+		}
+		return { left, right };
+	}
+
+	/** Put the dragged tab before the first other tab whose middle is right of `centre`. True when it moved. */
+	private reorder(el: HTMLElement, centre: number): boolean {
 		const others = Array.from(this.strip.children).filter((other) => other !== el);
 		const before =
 			others.find((other) => {
@@ -134,7 +165,9 @@ export class TabBar {
 				return r.left + r.width / 2 > centre;
 			}) ?? null;
 		const inPlace = before ? el.nextElementSibling === before : el === this.strip.lastElementChild;
-		if (!inPlace) this.strip.insertBefore(el, before);
+		if (inPlace) return false;
+		this.strip.insertBefore(el, before);
+		return true;
 	}
 
 	private scrollNearEdge(x: number): void {
