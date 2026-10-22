@@ -1,8 +1,12 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile } from 'obsidian';
+import { readEditingMode } from './editing-mode';
+import { linkedNote, openLink, renderedLanguages, unresolvedLinks } from './links';
 import type { Bounds } from './native';
-import { FloatPanel, sweepOrphanPanels, writePanelPage } from './panel';
-import { Notes } from './notes';
+import { Binding, Notes } from './notes';
+import { FloatPanel, TabContent, sweepOrphanPanels, writePanelPage } from './panel';
+import type { RenderRequest } from './panel-editor';
 import { DEFAULT_SETTINGS, FloatNoteSettings, FloatNoteSettingTab } from './settings';
+import { answerRenderRequests } from './snippets';
 import { buildViewDocument } from './view';
 
 /** How long after the last move or resize the panel's bounds are saved. */
@@ -60,7 +64,24 @@ export default class FloatNotePlugin extends Plugin {
 			},
 		});
 
+		this.addCommand({
+			id: 'toggle-float-source-mode',
+			name: 'Toggle float source mode',
+			checkCallback: (checking) => {
+				if (!this.panel) return false;
+				if (!checking) void this.panel.toggleSource();
+				return true;
+			},
+		});
+
 		this.registerEvent(this.app.vault.on('modify', (file) => this.onVaultModify(file)));
+		// Live Preview dims links to notes that do not exist; which those are changes as notes are saved and indexed.
+		this.registerEvent(
+			this.app.metadataCache.on('resolve', (file) => {
+				const b = this.notes.byFile(file);
+				if (this.panel && b) void this.panel.setUnresolved(b.id, unresolvedLinks(this.app, file));
+			}),
+		);
 		this.registerEvent(
 			this.app.vault.on('rename', (file) => {
 				const b = this.notes.byFile(file);
@@ -116,6 +137,11 @@ export default class FloatNotePlugin extends Plugin {
 			new Notice('Float Note: no active note to float.');
 			return;
 		}
+		await this.floatFile(file);
+	}
+
+	/** Float a note: in its tab if it is already floating, in a new tab if the panel is open, or in a new panel. */
+	async floatFile(file: TFile): Promise<void> {
 		if (this.busy) return;
 		this.busy = true;
 		try {
@@ -129,7 +155,7 @@ export default class FloatNotePlugin extends Plugin {
 			if (this.panel?.isAlive()) {
 				const text = await this.app.vault.read(file);
 				const b = this.notes.add(file, text);
-				await this.panel.openTab({ id: b.id, name: file.basename, text });
+				await this.panel.openTab(this.content(b, text));
 				this.log('tab-opened', { path: file.path });
 				return;
 			}
@@ -140,7 +166,7 @@ export default class FloatNotePlugin extends Plugin {
 			const b = this.notes.add(file, text);
 			this.panel = await FloatPanel.open(
 				this.pagePath,
-				{ id: b.id, name: file.basename, text },
+				this.content(b, text),
 				() => this.settings,
 				(event, extra) => this.log(event, extra),
 				{
@@ -158,6 +184,15 @@ export default class FloatNotePlugin extends Plugin {
 						void this.closePanel();
 					},
 					onViewRequested: () => void this.renderView(),
+					onRenderRequests: (requests) => this.renderSnippets(requests),
+					onOpenLink: (request) => {
+						const b = this.notes.get(request.tab);
+						this.log('link-opened', { external: request.external });
+						if (!b) return;
+						const note = linkedNote(this.app, b.file, request);
+						if (note) void this.floatFile(note);
+						else openLink(this.app, b.file, request);
+					},
 					onBounds: (bounds) => this.rememberBounds(bounds),
 					onTick: () => this.notes.writeIdle(),
 				},
@@ -169,6 +204,30 @@ export default class FloatNotePlugin extends Plugin {
 			this.closePanelNow();
 		} finally {
 			this.busy = false;
+		}
+	}
+
+	/** What the panel needs to show a note in a tab. */
+	private content(b: Binding, text: string): TabContent {
+		return {
+			id: b.id,
+			name: b.file.basename,
+			text,
+			editingMode: readEditingMode(this.app),
+			unresolved: unresolvedLinks(this.app, b.file),
+			renderedLanguages: renderedLanguages(),
+		};
+	}
+
+	/** Render what Live Preview asked for, each against the note of the tab that asked. */
+	private renderSnippets(requests: RenderRequest[]): void {
+		const panel = this.panel;
+		if (!panel) return;
+		const byTab = new Map<string, RenderRequest[]>();
+		for (const r of requests) byTab.set(r.tab, [...(byTab.get(r.tab) ?? []), r]);
+		for (const [id, list] of byTab) {
+			const b = this.notes.get(id);
+			if (b) void answerRenderRequests(this.app, b.file, panel, list, (event, extra) => this.log(event, extra));
 		}
 	}
 

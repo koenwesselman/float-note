@@ -84,6 +84,7 @@ npm run build
     <Vault>/.obsidian/plugins/<plugin-id>/
     ```
 - Reload Obsidian and enable the plugin in **Settings → Community plugins**.
+- Unit tests: `npm test` runs vitest on `test/`. They cover the panel's Live Preview decorations, which are pure functions of an editor state, so they run without Obsidian.
 
 ## Commands & settings
 
@@ -175,6 +176,7 @@ Follow Obsidian's **Developer Policies** and **Plugin Guidelines**. In particula
 - Introduce network calls without an obvious user-facing reason and documentation.
 - Ship features that require cloud services without clear disclosure and explicit opt-in.
 - Store or transmit vault contents unless essential and consented.
+- Commit implementation plans or other planning documents. Keep plans in the conversation; only code, docs for users and config belong in the repository.
 
 ## Common tasks
 

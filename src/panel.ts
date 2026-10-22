@@ -1,8 +1,9 @@
 import { DataAdapter, FileSystemAdapter } from 'obsidian';
 import editorScript from 'virtual:panel-editor';
 import { Bounds, NativeWindow, createWindow, isAlive, onSomeDisplay, safe, windowsTitled } from './native';
-import type { CloseSource, OpenArgs, PollResult, Theme } from './panel-editor';
+import type { CloseSource, EditingMode, Mode, OpenArgs, OpenRequest, PollResult, Rendered, RenderRequest, Stylesheet, Theme } from './panel-editor';
 import type { FloatNoteSettings } from './settings';
+import { readTheme } from './theme';
 
 export type Log = (event: string, extra?: Record<string, unknown>) => void;
 
@@ -22,6 +23,9 @@ export interface TabContent {
 	id: string;
 	name: string;
 	text: string;
+	editingMode: EditingMode;
+	unresolved: string[];
+	renderedLanguages: string[];
 }
 
 export interface PanelEvents {
@@ -33,6 +37,10 @@ export interface PanelEvents {
 	onCloseRequested(source: CloseSource): void;
 	/** The active tab wants a rendering; the plugin should render it and call showView. */
 	onViewRequested(): void;
+	/** Live Preview wants blocks rendered; the plugin should answer with setRendered. */
+	onRenderRequests(requests: RenderRequest[]): void;
+	/** The user Cmd+clicked a link in a tab. */
+	onOpenLink(request: OpenRequest): void;
 	/** The panel was moved or resized. */
 	onBounds(bounds: Bounds): void;
 	/** After every poll, changed or not. */
@@ -69,8 +77,10 @@ export class FloatPanel {
 	private inflight: Promise<void> | null = null;
 	/** The tab the page showed at the last poll, and its mode. */
 	activeId: string | null = null;
-	mode: 'edit' | 'view' = 'edit';
+	mode: Mode = 'live';
 	private lastBounds: Bounds | null = null;
+	/** Which main-window CSS the page last got for Live Preview's renderings. */
+	stylesheetFingerprint: string | null = null;
 
 	private constructor(
 		private readonly native: NativeWindow,
@@ -153,6 +163,22 @@ export class FloatPanel {
 
 	async toggleMode(): Promise<void> {
 		await this.exec('window.floatNote.toggleMode()');
+	}
+
+	async toggleSource(): Promise<void> {
+		await this.exec('window.floatNote.toggleSource()');
+	}
+
+	async setRendered(results: Rendered[]): Promise<void> {
+		await this.exec(`window.floatNote.setRendered(${JSON.stringify(results)})`);
+	}
+
+	async setStylesheet(sheet: Stylesheet): Promise<void> {
+		await this.exec(`window.floatNote.setStylesheet(${JSON.stringify(sheet)})`);
+	}
+
+	async setUnresolved(id: string, list: string[]): Promise<void> {
+		await this.exec(`window.floatNote.setUnresolved(${JSON.stringify(id)}, ${JSON.stringify(list)})`);
 	}
 
 	async showView(id: string, srcdoc: string): Promise<void> {
@@ -243,6 +269,8 @@ export class FloatPanel {
 			}
 			if (result?.viewDiagnostics) this.log('view-diagnostics', result.viewDiagnostics);
 			if (result?.viewRequested) this.events.onViewRequested();
+			if (result?.renderRequests.length) this.events.onRenderRequests(result.renderRequests);
+			if (result?.openLink) this.events.onOpenLink(result.openLink);
 			if (result?.close) this.events.onCloseRequested(result.close);
 			this.checkBounds();
 			this.events.onTick();
@@ -287,7 +315,7 @@ export class FloatPanel {
 		const args: OpenArgs = { ...content, theme };
 		await this.exec(`window.floatNote.open(${JSON.stringify(args)})`);
 		this.activeId = content.id;
-		this.mode = 'edit';
+		this.mode = content.editingMode;
 	}
 
 	/** Run code in the page. Null if the window is gone or the call fails. */
@@ -307,82 +335,6 @@ export function sweepOrphanPanels(): number {
 	const orphans = windowsTitled(PANEL_TITLE);
 	for (const w of orphans) safe(() => w.destroy(), undefined);
 	return orphans.length;
-}
-
-/**
- * Obsidian's current theme, read from the main window at the moment of opening.
- *
- * Token colours are measured rather than read from variables: themes style
- * CodeMirror's own classes directly (Things sets `span.cm-strong` to its own
- * `--strong-color` and never touches Obsidian's `--bold-color`), so the only
- * theme-agnostic answer is what the theme actually renders. A hidden copy of
- * Obsidian's source-editor markup is put in the main window, measured, and
- * removed.
- */
-function readTheme(): Theme {
-	const style = getComputedStyle(document.body);
-	const v = (name: string, fallback: string) => style.getPropertyValue(name).trim() || fallback;
-	const probe = measureTokens();
-	return {
-		background: v('--background-primary', '#1e1e1e'),
-		text: v('--text-normal', '#dcddde'),
-		muted: v('--text-muted', '#999999'),
-		accent: v('--text-accent', '#8a5cf5'),
-		link: probe.link?.color ?? v('--link-color', v('--text-accent', '#8a5cf5')),
-		bold: probe.strong?.color ?? 'inherit',
-		italic: probe.em?.color ?? 'inherit',
-		quote: probe.quote?.color ?? v('--text-muted', '#999999'),
-		quoteStyle: probe.quote?.fontStyle ?? 'normal',
-		headingColours: [1, 2, 3, 4, 5, 6].map((n) => probe[`h${n}`]?.color ?? 'inherit'),
-		headingSizes: [1, 2, 3, 4, 5, 6].map((n, i) => probe[`h${n}`]?.fontSize ?? ['1.6em', '1.4em', '1.2em', '1.1em', '1em', '1em'][i] ?? '1em'),
-		yamlKey: probe.frontmatterKey?.color ?? v('--text-muted', '#999999'),
-		border: v('--background-modifier-border', '#333333'),
-		selection: v('--text-selection', 'rgba(138, 92, 245, 0.25)'),
-		codeBackground: v('--code-background', 'rgba(127, 127, 127, 0.15)'),
-		font: v('--font-text', style.fontFamily || 'system-ui, sans-serif'),
-		monospace: v('--font-monospace', 'ui-monospace, Menlo, monospace'),
-		size: v('--font-text-size', '16px'),
-	};
-}
-
-interface Measured {
-	color: string;
-	fontStyle: string;
-	fontSize: string;
-}
-
-/** Line and token classes as Obsidian's CodeMirror 6 source view emits them. */
-const PROBES: Record<string, { line?: string; token: string }> = {
-	strong: { token: 'cm-strong' },
-	em: { token: 'cm-em' },
-	link: { token: 'cm-link' },
-	quote: { line: 'HyperMD-quote HyperMD-quote-1', token: 'cm-quote cm-quote-1' },
-	frontmatterKey: { line: 'cm-hmd-frontmatter', token: 'cm-hmd-frontmatter cm-atom' },
-	...Object.fromEntries(
-		[1, 2, 3, 4, 5, 6].map((n) => [`h${n}`, { line: `HyperMD-header HyperMD-header-${n}`, token: `cm-header cm-header-${n}` }]),
-	),
-};
-
-function measureTokens(): Record<string, Measured | undefined> {
-	const results: Record<string, Measured | undefined> = {};
-	const host = document.body.createDiv({ cls: 'markdown-source-view mod-cm6 cm-s-obsidian' });
-	host.setCssStyles({ position: 'absolute', left: '-10000px', top: '0', visibility: 'hidden', pointerEvents: 'none' });
-	try {
-		const content = host.createDiv({ cls: 'cm-editor' }).createDiv({ cls: 'cm-scroller' }).createDiv({ cls: 'cm-content' });
-		const spans: Record<string, HTMLElement> = {};
-		for (const [name, probe] of Object.entries(PROBES)) {
-			spans[name] = content.createDiv({ cls: `cm-line ${probe.line ?? ''}`.trim() }).createSpan({ cls: probe.token, text: 'x' });
-		}
-		for (const [name, span] of Object.entries(spans)) {
-			const computed = getComputedStyle(span);
-			results[name] = { color: computed.color, fontStyle: computed.fontStyle, fontSize: computed.fontSize };
-		}
-	} catch (e) {
-		console.error('Float Note: could not measure the theme', e);
-	} finally {
-		host.remove();
-	}
-	return results;
 }
 
 function renderPage(): string {

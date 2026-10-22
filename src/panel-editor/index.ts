@@ -8,36 +8,31 @@
  * learns about edits and close requests only by polling - nothing here calls
  * out, so there is no channel to set up and nothing to leak.
  */
-import { Annotation, EditorState, RangeSetBuilder, StateField } from '@codemirror/state';
-import { Decoration, DecorationSet, EditorView, drawSelection, keymap } from '@codemirror/view';
+import { Annotation, Compartment, EditorState, Extension } from '@codemirror/state';
+import { EditorView, drawSelection, keymap } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
-import { yamlFrontmatter } from '@codemirror/lang-yaml';
-import { HighlightStyle, syntaxHighlighting } from '@codemirror/language';
-import { tags as t } from '@lezer/highlight';
+import { syntaxHighlighting } from '@codemirror/language';
+import { frontmatter } from './frontmatter';
+import { livePreview } from './live-preview';
+import { cellSetup } from './live-preview/cell-editor';
+import { setRenderedLanguages } from './live-preview/fences';
+import { linkClicks, setUnresolved, takeOpenRequest, unresolvedField } from './live-preview/links';
+import type { LinkTarget, OpenRequest } from './live-preview/links';
+import { noteId } from './live-preview/note';
+import { clearRendered, notifyRendered, setStylesheet, storeRendered, takeRenderRequests } from './live-preview/render';
+import type { Rendered, RenderRequest, Stylesheet } from './live-preview/render';
+import { reveal, syncFocus } from './live-preview/reveal';
+import { frame, watchFrame } from './reading';
+import { markdownSyntax } from './syntax';
 import { TabBar } from './tabs';
+import { Theme, applyTheme, editorTheme, highlight } from './theme';
 
-export interface Theme {
-	background: string;
-	text: string;
-	muted: string;
-	accent: string;
-	link: string;
-	bold: string;
-	italic: string;
-	quote: string;
-	quoteStyle: string;
-	/** h1 to h6, colour and size each. */
-	headingColours: string[];
-	headingSizes: string[];
-	yamlKey: string;
-	border: string;
-	selection: string;
-	codeBackground: string;
-	font: string;
-	monospace: string;
-	size: string;
-}
+export type { CalloutStyle, Theme } from './theme';
+export type { LinkTarget, OpenRequest, Rendered, RenderRequest, Stylesheet };
+
+/** How a tab is edited: Obsidian's Source mode or Live Preview. */
+export type EditingMode = 'source' | 'live';
+export type Mode = EditingMode | 'view';
 
 export interface OpenArgs {
 	/** The plugin's id for the tab. */
@@ -45,10 +40,15 @@ export interface OpenArgs {
 	name: string;
 	text: string;
 	theme: Theme;
+	/** Obsidian's default editing mode, which a new tab follows. */
+	editingMode: EditingMode;
+	/** Link paths in the note that resolve to nothing. */
+	unresolved: string[];
+	/** Code block languages Obsidian draws, for Live Preview to show rendered. */
+	renderedLanguages: string[];
 }
 
 export type CloseSource = 'escape' | 'button' | 'mod-w';
-export type Mode = 'edit' | 'view';
 
 export interface TabText {
 	id: string;
@@ -75,6 +75,10 @@ export interface PollResult {
 	mode: Mode;
 	/** Measurements of the last View load, reported once. */
 	viewDiagnostics: Record<string, unknown> | null;
+	/** Blocks Live Preview wants Obsidian to render. */
+	renderRequests: RenderRequest[];
+	/** A link the user Cmd+clicked. */
+	openLink: OpenRequest | null;
 }
 
 /** One floating note. */
@@ -83,6 +87,8 @@ interface Tab {
 	/** The editor state while the tab is in the background. While it shows, the view holds the live one. */
 	state: EditorState;
 	mode: Mode;
+	/** The editing mode View returns to. */
+	editingMode: EditingMode;
 	/** Edits since the last poll. */
 	unpolled: boolean;
 	/** Where the editor was scrolled when the tab was last left. */
@@ -95,6 +101,10 @@ interface Tab {
 /** Marks a change that came from the vault, so it is not reported back as an edit. */
 const external = Annotation.define<boolean>();
 
+/** Holds livePreview in Live Preview and nothing in Source. Part of each tab's own state. */
+const preview = new Compartment();
+const sourceMode: Extension = [];
+
 const tabs = new Map<string, Tab>();
 let active: Tab | null = null;
 let closed: ClosedTab[] = [];
@@ -106,79 +116,24 @@ function requestClose(source: CloseSource): void {
 	closeRequested = source;
 }
 
-/** Styled source: markup stays visible, as in Obsidian's Source mode. Colours and sizes come from Obsidian's theme. */
-const headingTags = [t.heading1, t.heading2, t.heading3, t.heading4, t.heading5, t.heading6];
-const highlight = HighlightStyle.define([
-	...headingTags.map((tag, i) => ({
-		tag,
-		fontSize: `var(--fn-h${i + 1}-size)`,
-		color: `var(--fn-h${i + 1}-colour)`,
-		fontWeight: '700',
-	})),
-	{ tag: t.strong, fontWeight: '700', color: 'var(--fn-bold)' },
-	{ tag: t.emphasis, fontStyle: 'italic', color: 'var(--fn-italic)' },
-	{ tag: t.strikethrough, textDecoration: 'line-through' },
-	{ tag: t.monospace, fontFamily: 'var(--fn-monospace)', backgroundColor: 'var(--fn-code-background)', borderRadius: '3px' },
-	{ tag: [t.link, t.url], color: 'var(--fn-link)' },
-	{ tag: [t.processingInstruction, t.contentSeparator, t.labelName, t.atom, t.meta], color: 'var(--fn-muted)' },
-	{ tag: t.quote, color: 'var(--fn-quote)', fontStyle: 'var(--fn-quote-style)' },
-	// Frontmatter keys, from the YAML parser.
-	{ tag: t.definition(t.propertyName), color: 'var(--fn-yaml-key)' },
-]);
-
-/**
- * Frontmatter lines in monospace, as Obsidian's Source mode shows them. Found
- * by text rather than the syntax tree: a leading `---` line and the next
- * `---`, within the first 200 lines.
- */
-const frontmatterLine = Decoration.line({ class: 'fn-frontmatter' });
-
-function frontmatterDecorations(state: EditorState): DecorationSet {
-	const doc = state.doc;
-	if (doc.lines < 2 || doc.line(1).text.trimEnd() !== '---') return Decoration.none;
-	const last = Math.min(doc.lines, 200);
-	for (let n = 2; n <= last; n++) {
-		if (doc.line(n).text.trimEnd() !== '---') continue;
-		const builder = new RangeSetBuilder<Decoration>();
-		for (let i = 1; i <= n; i++) builder.add(doc.line(i).from, doc.line(i).from, frontmatterLine);
-		return builder.finish();
-	}
-	return Decoration.none;
-}
-
-const frontmatter = StateField.define<DecorationSet>({
-	create: frontmatterDecorations,
-	update: (value, tr) => (tr.docChanged ? frontmatterDecorations(tr.state) : value),
-	provide: (field) => EditorView.decorations.from(field),
-});
-
-const theme = EditorView.theme({
-	'&': { height: '100%', backgroundColor: 'var(--fn-background)', color: 'var(--fn-text)', fontSize: 'var(--fn-size)' },
-	'&.cm-focused': { outline: 'none' },
-	'.cm-scroller': { fontFamily: 'var(--fn-font)', lineHeight: '1.5', padding: '8px 0' },
-	'.cm-content': { padding: '0 14px', caretColor: 'var(--fn-text)' },
-	'.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--fn-text)' },
-	'.fn-frontmatter': { fontFamily: 'var(--fn-monospace)', fontSize: '0.85em' },
-	'&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
-		backgroundColor: 'var(--fn-selection)',
-	},
-});
-
-function createState(text: string): EditorState {
+function createState(id: string, text: string, editing: EditingMode, unresolved: readonly string[] = []): EditorState {
 	return EditorState.create({
 		doc: text,
 		extensions: [
+			noteId.of(id),
 			history(),
 			drawSelection(),
 			EditorView.lineWrapping,
-			// GFM base, for strikethrough, task lists and tables. markdown() adds
-			// its own keymap, which continues lists on Enter. Wrapped so a YAML
-			// frontmatter block is parsed as YAML: plain Markdown reads its closing
-			// `---` as a setext underline and turns the block into a heading.
-			yamlFrontmatter({ content: markdown({ base: markdownLanguage }) }),
+			markdownSyntax(),
 			frontmatter,
 			syntaxHighlighting(highlight),
-			theme,
+			editorTheme,
+			reveal,
+			unresolvedField.init(() => new Set(unresolved)),
+			linkClicks,
+			preview.of(editing === 'live' ? livePreview : sourceMode),
+			// A table cell's editor: the note's syntax and Live Preview, in the note's tab.
+			cellSetup.of([noteId.of(id), markdownSyntax(), syntaxHighlighting(highlight), reveal, unresolvedField.init(() => new Set(unresolved)), linkClicks, livePreview]),
 			// Esc, Cmd+W, Cmd+E and tab switching are onKey's, in Edit and View alike.
 			keymap.of([
 				...historyKeymap,
@@ -192,32 +147,7 @@ function createState(text: string): EditorState {
 	});
 }
 
-const view = new EditorView({ state: createState(''), parent: document.getElementById('fn-editor') ?? document.body });
-
-function applyTheme(theme: Theme): void {
-	const root = document.documentElement.style;
-	const vars: Record<string, string> = {
-		'--fn-background': theme.background,
-		'--fn-text': theme.text,
-		'--fn-muted': theme.muted,
-		'--fn-accent': theme.accent,
-		'--fn-link': theme.link,
-		'--fn-bold': theme.bold,
-		'--fn-italic': theme.italic,
-		'--fn-quote': theme.quote,
-		'--fn-quote-style': theme.quoteStyle,
-		'--fn-yaml-key': theme.yamlKey,
-		'--fn-border': theme.border,
-		'--fn-selection': theme.selection,
-		'--fn-code-background': theme.codeBackground,
-		'--fn-font': theme.font,
-		'--fn-monospace': theme.monospace,
-		'--fn-size': theme.size,
-	};
-	theme.headingColours.forEach((colour, i) => (vars[`--fn-h${i + 1}-colour`] = colour));
-	theme.headingSizes.forEach((size, i) => (vars[`--fn-h${i + 1}-size`] = size));
-	for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
-}
+const view = new EditorView({ state: createState('', '', 'live'), parent: document.getElementById('fn-editor') ?? document.body });
 
 document.getElementById('fn-mode')?.addEventListener('click', () => toggleMode());
 
@@ -229,13 +159,6 @@ const bar = new TabBar(document.getElementById('fn-tabs') ?? document.body, {
 	close: (id) => closeTab(id, 'button'),
 });
 
-/**
- * View is Obsidian's own rendering, made by the plugin in the main window and
- * shown here in an iframe. An iframe because the view carries Obsidian's whole
- * stylesheet, which also styles `.cm-editor` - the same classes this page's
- * editor uses - so it must not share a document with it.
- */
-const frame = document.getElementById('fn-view') as HTMLIFrameElement | null;
 const editorEl = document.getElementById('fn-editor');
 
 /** Which tab's rendering the frame holds. */
@@ -256,6 +179,9 @@ function activate(tab: Tab): void {
 		active = tab;
 		view.setState(tab.state);
 		if (tab.scroll) view.dispatch({ effects: tab.scroll });
+		// Renderings that arrived while the tab was in the background.
+		notifyRendered(view);
+		syncFocus(view);
 		bar.setActive(tab.id);
 	}
 	showMode();
@@ -288,6 +214,7 @@ function removeTab(tab: Tab): void {
 	const i = order.indexOf(tab.id);
 	tabs.delete(tab.id);
 	bar.remove(tab.id);
+	clearRendered(tab.id);
 	if (frameTab === tab) frameTab = null;
 	if (tab !== active) {
 		showMode();
@@ -300,16 +227,18 @@ function removeTab(tab: Tab): void {
 
 /** Put the active tab's mode on screen, and focus it. */
 function showMode(): void {
-	const mode = active?.mode ?? 'edit';
+	const mode = active?.mode ?? 'live';
 	const button = document.getElementById('fn-mode');
 	if (button) {
-		button.textContent = mode === 'edit' ? 'View' : 'Edit';
-		button.title = mode === 'edit' ? 'Show as Obsidian renders it (Cmd+E)' : 'Back to editing (Cmd+E)';
+		button.textContent = mode === 'view' ? 'Edit' : 'View';
+		button.title = mode === 'view' ? 'Back to editing (Cmd+E)' : 'Show as Obsidian renders it (Cmd+E)';
 	}
-	if (editorEl) editorEl.style.display = mode === 'edit' ? '' : 'none';
+	if (editorEl) editorEl.style.display = mode === 'view' ? 'none' : '';
 	if (frame) frame.style.display = mode === 'view' ? '' : 'none';
-	if (mode === 'edit') {
+	if (mode !== 'view') {
+		setEditingMode(mode);
 		view.focus();
+		syncFocus(view);
 		return;
 	}
 	if (active && frame && frameTab !== active) {
@@ -322,10 +251,25 @@ function showMode(): void {
 	frame?.focus();
 }
 
+/** Put the active tab's editor in Live Preview or Source. */
+function setEditingMode(next: EditingMode): void {
+	const wanted = next === 'live' ? livePreview : sourceMode;
+	if (preview.get(view.state) !== wanted) view.dispatch({ effects: preview.reconfigure(wanted) });
+}
+
+/** Cmd+E: between editing, in whichever mode the tab was last in, and View. */
 function toggleMode(): void {
 	if (!active) return;
-	active.mode = active.mode === 'edit' ? 'view' : 'edit';
+	active.mode = active.mode === 'view' ? active.editingMode : 'view';
 	if (active.mode === 'view') viewRequested = true;
+	showMode();
+}
+
+/** Between Live Preview and Source, as Obsidian's command of that name. From View, back to editing. */
+function toggleSource(): void {
+	if (!active) return;
+	active.editingMode = active.editingMode === 'live' ? 'source' : 'live';
+	active.mode = active.editingMode;
 	showMode();
 }
 
@@ -351,60 +295,16 @@ function onKey(event: KeyboardEvent): void {
 }
 document.addEventListener('keydown', onKey, true);
 
-/** The view is read-only: links do not navigate and checkboxes do not toggle. */
-function wireFrame(): void {
-	const doc = frame?.contentDocument;
-	if (!doc) return;
-	doc.addEventListener('keydown', onKey, true);
-	doc.addEventListener(
-		'click',
-		(event) => {
-			const target = event.target as Element | null;
-			if (target?.closest('a, input')) event.preventDefault();
-		},
-		true,
-	);
-}
-frame?.addEventListener('load', () => {
-	wireFrame();
-	const y = Number(frame.dataset.scroll ?? 0);
-	frame.contentWindow?.scrollTo(0, y);
-	viewDiagnostics = diagnose();
-});
-
-/** What the frame actually shows, for the debug log - the frame cannot be seen from the plugin. */
-function diagnose(): Record<string, unknown> {
-	const doc = frame?.contentDocument;
-	if (!frame || !doc) return { frame: frame ? 'no document' : 'missing' };
-	const win = frame.contentWindow;
-	const preview = doc.querySelector('.markdown-preview-view');
-	const first = doc.querySelector('.markdown-preview-sizer > *');
-	const style = (el: Element | null) => {
-		if (!el || !win) return null;
-		const c = win.getComputedStyle(el);
-		const r = el.getBoundingClientRect();
-		return { display: c.display, visibility: c.visibility, opacity: c.opacity, color: c.color, background: c.backgroundColor, position: c.position, top: Math.round(r.top), height: Math.round(r.height), width: Math.round(r.width) };
-	};
-	return {
-		frameSize: [frame.clientWidth, frame.clientHeight],
-		frameDisplay: getComputedStyle(frame).display,
-		srcdocLength: frame.srcdoc.length,
-		textLength: doc.body?.innerText.length ?? null,
-		scrollHeight: doc.documentElement.scrollHeight,
-		html: style(doc.documentElement),
-		body: style(doc.body),
-		preview: style(preview),
-		firstChild: first ? { tag: first.tagName, cls: first.className, ...style(first) } : null,
-		images: Array.from(doc.images, (img) => ({ src: img.src.slice(0, 40), complete: img.complete, naturalWidth: img.naturalWidth })),
-	};
-}
+watchFrame(onKey, () => frameTab?.id ?? '', (diagnostics) => (viewDiagnostics = diagnostics));
 
 const api = {
 	/** A note in a new tab at the end, shown at once. Its own state, so undo history stays with its note. */
 	open(args: OpenArgs): void {
 		applyTheme(args.theme);
+		setRenderedLanguages(args.renderedLanguages);
 		closeRequested = null;
-		const tab: Tab = { id: args.id, state: createState(args.text), mode: 'edit', unpolled: false, scroll: null, srcdoc: null, viewScroll: 0 };
+		const state = createState(args.id, args.text, args.editingMode, args.unresolved);
+		const tab: Tab = { id: args.id, state, mode: args.editingMode, editingMode: args.editingMode, unpolled: false, scroll: null, srcdoc: null, viewScroll: 0 };
 		tabs.set(tab.id, tab);
 		bar.add(tab.id, args.name);
 		activate(tab);
@@ -438,8 +338,10 @@ const api = {
 			close: closeRequested,
 			viewRequested,
 			active: active?.id ?? null,
-			mode: active?.mode ?? 'edit',
+			mode: active?.mode ?? 'live',
 			viewDiagnostics,
+			renderRequests: takeRenderRequests(),
+			openLink: takeOpenRequest(),
 		};
 		closed = [];
 		viewRequested = false;
@@ -492,12 +394,33 @@ const api = {
 		return true;
 	},
 
+	/** Obsidian's renderings of blocks Live Preview asked for. */
+	setRendered(results: Rendered[]): void {
+		storeRendered(results);
+		notifyRendered(view);
+	},
+
+	/** Obsidian's stylesheet, for those renderings. Sent before the first of them. */
+	setStylesheet,
+
+	/** Link paths in a tab's note that resolve to nothing, after Obsidian re-indexed it. */
+	setUnresolved(id: string, list: string[]): void {
+		const tab = tabs.get(id);
+		if (!tab) return;
+		const spec = { effects: setUnresolved.of(list) };
+		if (tab === active) view.dispatch(spec);
+		else tab.state = tab.state.update(spec).state;
+	},
+
 	setName(id: string, name: string): void {
 		bar.rename(id, name);
 	},
 
 	/** The palette's "Toggle float view", for when the panel does not have focus. */
 	toggleMode,
+
+	/** The palette's "Toggle float source mode". */
+	toggleSource,
 };
 
 (window as unknown as { floatNote: typeof api }).floatNote = api;
