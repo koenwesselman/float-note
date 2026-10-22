@@ -23,14 +23,17 @@ body { display: flex; flex-direction: column; font-family: var(--fn-font); }
 .fn-tab.is-active, .fn-tab.is-dragging { background: var(--fn-strip-active-background); color: var(--fn-strip-active-text); }
 .fn-tab.is-dragging { position: relative; z-index: 1; opacity: 0.85; transform: translateX(var(--fn-shift, 0)); }
 .fn-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fn-tab-close, #fn-mode { -webkit-app-region: no-drag; flex: none; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--fn-strip-icon); font: inherit; line-height: 1; padding: 0; cursor: pointer; }
-.fn-tab-close { font-size: 14px; width: 16px; height: 16px; border-radius: 3px; }
-#fn-mode { min-width: 22px; height: 20px; padding: 0 3px; border-radius: var(--fn-strip-radius); }
-.fn-tab-close:hover, #fn-mode:hover { background: var(--fn-strip-hover); color: var(--fn-strip-active-text); }
+/* .bar first: Obsidian's own button rules, in its stylesheet on this page too, outrank a lone class. */
+.bar .fn-tab-close, .bar #fn-mode { -webkit-app-region: no-drag; flex: none; display: flex; align-items: center; justify-content: center; border: 0; background: transparent; box-shadow: none; color: var(--fn-strip-icon); font: inherit; line-height: 1; padding: 0; cursor: pointer; }
+.bar .fn-tab-close { font-size: 14px; width: 16px; height: 16px; border-radius: 3px; }
+.bar #fn-mode { min-width: 22px; height: 20px; padding: 0 3px; border-radius: var(--fn-strip-radius); }
+.bar .fn-tab-close:hover, .bar #fn-mode:hover { background: var(--fn-strip-hover); color: var(--fn-strip-active-text); }
 .fn-tab-close svg { width: 12px; height: 12px; }
 #fn-mode svg { width: 14px; height: 14px; }
 #fn-editor { flex: 1; min-height: 0; }
 #fn-view { flex: 1; min-height: 0; border: 0; width: 100%; background: var(--fn-background); }
+/* Hidden copies of Obsidian's markup, measured and removed. */
+.fn-probe { position: absolute; left: -10000px; top: 0; visibility: hidden; pointer-events: none; }
 /* Scrollbars as Obsidian draws them. */
 .cm-scroller::-webkit-scrollbar { width: 12px; height: 12px; background: transparent; }
 .cm-scroller::-webkit-scrollbar-thumb { background-color: var(--fn-scrollbar-thumb); background-clip: padding-box; border: 3px solid transparent; border-radius: 20px; }

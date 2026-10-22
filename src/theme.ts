@@ -34,7 +34,6 @@ export function readTheme(): Theme {
 		tagBackground: v('--tag-background', 'rgba(138, 92, 245, 0.1)'),
 		unresolvedColour: v('--link-unresolved-color', v('--text-accent', '#8a5cf5')),
 		unresolvedOpacity: v('--link-unresolved-opacity', '0.7'),
-		listMarker: v('--list-marker-color', v('--text-faint', '#666666')),
 		doneColour: v('--checklist-done-color', v('--text-muted', '#999999')),
 		doneDecoration: v('--checklist-done-decoration', 'line-through'),
 		quoteBorder: v('--blockquote-border-color', v('--interactive-accent', '#8a5cf5')),

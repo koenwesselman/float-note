@@ -3,6 +3,7 @@ import editorScript from 'virtual:panel-editor';
 import { Bounds, NativeWindow, createWindow, isAlive, mainZoomFactor, onSomeDisplay, safe, windowsTitled } from './native';
 import type { CloseSource, EditingMode, Mode, OpenArgs, OpenRequest, PollResult, Rendered, RenderRequest, Stylesheet, Theme } from './panel-editor';
 import type { FloatNoteSettings } from './settings';
+import { cssFingerprint, shadowStylesheet } from './render';
 import { readTheme } from './theme';
 
 export type Log = (event: string, extra?: Record<string, unknown>) => void;
@@ -133,6 +134,8 @@ export class FloatPanel {
 		await native.loadFile(pagePath);
 		panel.followZoom();
 		await panel.addTab(content, theme);
+		// Before the panel shows, so it does not appear unstyled and then restyle.
+		await panel.syncStylesheet();
 		panel.present();
 		panel.pollTimer = window.setInterval(() => panel.tick(), POLL_MS);
 		return panel;
@@ -163,6 +166,7 @@ export class FloatPanel {
 		this.stylesheetFingerprint = null;
 		safe(() => this.native.setBackgroundColor(theme.background), undefined);
 		await this.exec(`window.floatNote.setTheme(${json})`);
+		await this.syncStylesheet();
 		this.log('theme-changed');
 		return true;
 	}
@@ -211,7 +215,16 @@ export class FloatPanel {
 		await this.exec(`window.floatNote.setRendered(${JSON.stringify(results)})`);
 	}
 
-	async setStylesheet(sheet: Stylesheet): Promise<void> {
+	/**
+	 * Send Obsidian's stylesheet, if the main window's CSS changed since the
+	 * page last got it: it styles the panel's editor, and Live Preview's
+	 * renderings.
+	 */
+	async syncStylesheet(): Promise<void> {
+		const fingerprint = cssFingerprint();
+		if (this.stylesheetFingerprint === fingerprint) return;
+		this.stylesheetFingerprint = fingerprint;
+		const sheet: Stylesheet = await shadowStylesheet();
 		await this.exec(`window.floatNote.setStylesheet(${JSON.stringify(sheet)})`);
 	}
 

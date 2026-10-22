@@ -54,14 +54,31 @@ describe('inline markup', () => {
 });
 
 describe('lines', () => {
-	it('hides heading markers unless the cursor is on the line', () => {
-		expect(inline('## Title ##\ntext')).toEqual(['hide "## "', 'hide " ##"']);
-		expect(inline('## Ti¦tle\ntext')).toEqual([]);
+	it('gives headings Obsidian\'s classes, and hides their markers unless the cursor is on the line', () => {
+		expect(inline('## Title ##\ntext')).toEqual(['line HyperMD-header HyperMD-header-2 @1', 'hide "## "', 'hide " ##"', 'mark cm-header cm-header-2 "## Title ##"']);
+		expect(inline('## Ti¦tle\ntext')).toEqual(['line HyperMD-header HyperMD-header-2 @1', 'mark cm-header cm-header-2 "## Title"']);
 	});
 
-	it('draws bullets, and leaves ordered numbers', () => {
-		expect(inline('- one\n1. two')).toEqual(['widget BulletWidget "-"']);
-		expect(inline('-¦ one')).toEqual([]);
+	it('draws list items as Obsidian does: its classes, guides and markers', () => {
+		expect(inline('- one\n\t- two\n1. three')).toEqual([
+			'line HyperMD-list-line HyperMD-list-line-1 @1',
+			'widget ListPrefixWidget "- "',
+			'line HyperMD-list-line HyperMD-list-line-2 @2',
+			'widget ListPrefixWidget "\\t- "',
+			'line HyperMD-list-line HyperMD-list-line-1 @3',
+			'widget ListPrefixWidget "1. "',
+		]);
+	});
+
+	it('shows a list marker the cursor is at, keeping the line\'s classes', () => {
+		expect(inline('-¦ one')).toEqual(['line HyperMD-list-line HyperMD-list-line-1 @1', 'mark cm-formatting cm-formatting-list cm-formatting-list-ul cm-list-1 "- "']);
+		expect(inline('- one\n\t-¦ two')).toEqual([
+			'line HyperMD-list-line HyperMD-list-line-1 @1',
+			'widget ListPrefixWidget "- "',
+			'line HyperMD-list-line HyperMD-list-line-2 @2',
+			'mark cm-hmd-list-indent cm-hmd-list-indent-1 "\\t"',
+			'mark cm-formatting cm-formatting-list cm-formatting-list-ul cm-list-2 "- "',
+		]);
 	});
 
 	it('draws tasks as checkboxes and styles done ones', () => {

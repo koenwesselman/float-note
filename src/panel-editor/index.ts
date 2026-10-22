@@ -24,6 +24,7 @@ import { reveal, syncFocus } from './live-preview/reveal';
 import { frame, watchFrame } from './reading';
 import { markdownSyntax } from './syntax';
 import { drawModeButton, setIcons } from './chrome';
+import { applyObsidianCss, setWrapper } from './obsidian-css';
 import { TabBar } from './tabs';
 import { Theme, applyTheme, editorTheme, highlight } from './theme';
 
@@ -158,6 +159,7 @@ const bar = new TabBar(document.getElementById('fn-tabs') ?? document.body, {
 });
 
 const editorEl = document.getElementById('fn-editor');
+if (editorEl) setWrapper(editorEl, true);
 
 /** Which tab's rendering the frame holds. */
 let frameTab: Tab | null = null;
@@ -247,6 +249,7 @@ function showMode(): void {
 
 /** Put the active tab's editor in Live Preview or Source. */
 function setEditingMode(next: EditingMode): void {
+	if (editorEl) setWrapper(editorEl, next === 'live');
 	const wanted = next === 'live' ? livePreview : sourceMode;
 	if (preview.get(view.state) !== wanted) view.dispatch({ effects: preview.reconfigure(wanted) });
 }
@@ -414,8 +417,12 @@ const api = {
 		notifyRendered(view);
 	},
 
-	/** Obsidian's stylesheet, for those renderings. Sent before the first of them. */
-	setStylesheet,
+	/** Obsidian's stylesheet, for the editor and for those renderings. Sent on opening, and again when the theme changes. */
+	setStylesheet(sheet: Stylesheet): void {
+		applyObsidianCss(setStylesheet(sheet), sheet.bodyClass, sheet.bodyStyle);
+		// List indents use the marker widths just measured.
+		notifyRendered(view);
+	},
 
 	/** Link paths in a tab's note that resolve to nothing, after Obsidian re-indexed it. */
 	setUnresolved(id: string, list: string[]): void {

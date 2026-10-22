@@ -4,7 +4,8 @@ import { calloutStyle } from '../theme';
 import type { Builder } from './builder';
 import { isRenderedFence } from './fences';
 import { isRevealed } from './reveal';
-import { BulletWidget, CalloutTitleWidget, CheckboxWidget, RuleWidget } from './widgets';
+import { markerKind } from '../obsidian-css';
+import { CalloutTitleWidget, CheckboxWidget, ListPrefixWidget, RuleWidget } from './widgets';
 
 const CALLOUT = /^(\s*>\s*)\[!([^\]\s]+)\]([+-]?)[ \t]*/;
 
@@ -23,6 +24,10 @@ export function decorateLines(b: Builder, ref: SyntaxNodeRef, from: number, to: 
 	const { state } = b;
 	const name = ref.name;
 	if (/^ATXHeading[1-6]$/.test(name)) {
+		// Obsidian's classes, for its CSS and the theme's: size, spacing, rules.
+		const level = name.slice(-1);
+		b.line(ref.from, `HyperMD-header HyperMD-header-${level}`);
+		b.mark(ref.from, ref.to, `cm-header cm-header-${level}`);
 		if (!lineRevealed(state, ref.from)) decorateHeading(b, ref.node);
 		return true;
 	}
@@ -36,7 +41,7 @@ export function decorateLines(b: Builder, ref: SyntaxNodeRef, from: number, to: 
 			return false;
 		}
 		case 'ListMark':
-			decorateListMark(b, ref.node);
+			decorateListItem(b, ref.node);
 			return false;
 		case 'Task':
 			decorateTask(b, ref.node);
@@ -101,11 +106,41 @@ function decorateQuote(b: Builder, node: SyntaxNode, from: number, to: number): 
 	b.widget(start, first.from + match[0].length, new CalloutTitleWidget(type, !hasTitle));
 }
 
-/** A bullet's `-`, `*` or `+` as a dot, unless the cursor is at it. Ordered lists keep their numbers. */
-function decorateListMark(b: Builder, mark: SyntaxNode): void {
+/** How deeply a list item is nested: 1 for a top-level item. */
+function listLevel(item: SyntaxNode): number {
+	let level = 0;
+	for (let node: SyntaxNode | null = item; node; node = node.parent) if (node.name === 'BulletList' || node.name === 'OrderedList') level++;
+	return level;
+}
+
+/**
+ * A list item's line as Obsidian's Live Preview draws it: Obsidian's list
+ * classes, a hanging indent so wrapped text lines up, and - unless the
+ * cursor is at the marker - an indentation guide per level and a bullet or
+ * number in place of the source's indentation and marker.
+ */
+function decorateListItem(b: Builder, mark: SyntaxNode): void {
 	if (mark.nextSibling?.name === 'Task') return;
-	if (mark.parent?.parent?.name !== 'BulletList') return;
-	if (!isRevealed(b.state, mark.from, mark.to)) b.widget(mark.from, mark.to, new BulletWidget());
+	const list = mark.parent?.parent?.name;
+	if (list !== 'BulletList' && list !== 'OrderedList') return;
+	const { state } = b;
+	const kind = list === 'BulletList' ? 'ul' : 'ol';
+	const level = mark.parent ? listLevel(mark.parent) : 1;
+	const marker = state.sliceDoc(mark.from, mark.to);
+	const line = state.doc.lineAt(mark.from);
+	// In a quote, `> ` comes first: the marker alone is replaced, without guides.
+	const indented = state.sliceDoc(line.from, mark.from).trim() === '';
+	const indents = indented ? level - 1 : 0;
+	const width = `calc(${indents} * var(--list-indent) + var(--fn-marker-${markerKind(kind, marker)}))`;
+	b.line(line.from, `HyperMD-list-line HyperMD-list-line-${level}`, `text-indent: calc(-1 * ${width}); padding-inline-start: ${width};`);
+	const end = mark.to + (state.sliceDoc(mark.to, mark.to + 1) === ' ' ? 1 : 0);
+	if (!isRevealed(state, mark.from, mark.to)) {
+		b.widget(indented ? line.from : mark.from, end, new ListPrefixWidget(kind, marker, level, indents));
+		return;
+	}
+	// The source, in the same classes, so its spacing holds while it is edited.
+	if (indents > 0) b.mark(line.from, mark.from, `cm-hmd-list-indent cm-hmd-list-indent-${indents}`);
+	b.mark(mark.from, end, `cm-formatting cm-formatting-list cm-formatting-list-${kind} cm-list-${level}`);
 }
 
 /** `- [ ]` as a checkbox, unless the cursor is in it; done tasks styled as the theme styles them. */
