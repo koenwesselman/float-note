@@ -1,7 +1,7 @@
 import { DataAdapter, FileSystemAdapter } from 'obsidian';
 import editorScript from 'virtual:panel-editor';
 import { Bounds, NativeWindow, createWindow, isAlive, onSomeDisplay, safe, windowsTitled } from './native';
-import type { CloseSource, LoadArgs, PollResult, Theme } from './panel-editor';
+import type { CloseSource, OpenArgs, PollResult, Theme } from './panel-editor';
 import type { FloatNoteSettings } from './settings';
 
 export type Log = (event: string, extra?: Record<string, unknown>) => void;
@@ -17,17 +17,21 @@ const DEFAULT_SIZE = { width: 420, height: 480 };
 const REAPPLY_DELAYS_MS = [150, 600];
 const POLL_MS = 300;
 
-export interface PanelContent {
+/** A note for a tab. */
+export interface TabContent {
+	id: string;
 	name: string;
 	text: string;
 }
 
 export interface PanelEvents {
-	/** The panel's text changed since the last poll. */
-	onText(text: string): void;
-	/** The user pressed the ×, Esc or Cmd+W in the panel. */
+	/** A tab's text changed since the last poll. */
+	onText(id: string, text: string): void;
+	/** The user closed a tab, other than the last. The text is edits not yet reported. */
+	onTabClosed(id: string, text: string | null): void;
+	/** The user pressed Esc, or closed the last tab. */
 	onCloseRequested(source: CloseSource): void;
-	/** The user switched to View; the plugin should render and call showView. */
+	/** The active tab wants a rendering; the plugin should render it and call showView. */
 	onViewRequested(): void;
 	/** The panel was moved or resized. */
 	onBounds(bounds: Bounds): void;
@@ -51,7 +55,7 @@ export async function writePanelPage(adapter: DataAdapter, path: string): Promis
 }
 
 /**
- * A plugin-created NSPanel (`type: 'panel'`) editing one note. Obsidian's
+ * A plugin-created NSPanel (`type: 'panel'`) editing notes in tabs. Obsidian's
  * popouts cannot be panels - their window options are fixed - and only a
  * panel floats over another app's full-screen Space.
  *
@@ -63,7 +67,8 @@ export class FloatPanel {
 	private timers: number[] = [];
 	private pollTimer: number | null = null;
 	private inflight: Promise<void> | null = null;
-	/** What the page showed at the last poll. */
+	/** The tab the page showed at the last poll, and its mode. */
+	activeId: string | null = null;
 	mode: 'edit' | 'view' = 'edit';
 	private lastBounds: Bounds | null = null;
 
@@ -75,7 +80,7 @@ export class FloatPanel {
 
 	static async open(
 		pagePath: string,
-		content: PanelContent,
+		content: TabContent,
 		settings: () => FloatNoteSettings,
 		log: Log,
 		events: PanelEvents,
@@ -113,7 +118,7 @@ export class FloatPanel {
 		panel.setOpacity(settings().opacity);
 		panel.lastBounds = safe(() => native.getBounds(), null);
 		await native.loadFile(pagePath);
-		await panel.load(content, theme);
+		await panel.addTab(content, theme);
 		panel.present();
 		panel.pollTimer = window.setInterval(() => panel.tick(), POLL_MS);
 		return panel;
@@ -123,39 +128,51 @@ export class FloatPanel {
 		return isAlive(this.native);
 	}
 
-	/** Re-target to another note. */
-	async show(content: PanelContent): Promise<void> {
-		this.mode = 'edit';
-		await this.load(content, readTheme());
+	/** Another note, in a new tab, shown. */
+	async openTab(content: TabContent): Promise<void> {
+		await this.addTab(content, readTheme());
 		this.present();
 	}
 
-	/** Offer a change made outside the panel. False when the panel has unpolled edits. */
-	async replace(text: string): Promise<boolean> {
-		return (await this.exec<boolean>(`window.floatNote.replace(${JSON.stringify(text)})`)) === true;
+	/** Show a tab already open. */
+	async activate(id: string): Promise<void> {
+		await this.exec(`window.floatNote.activate(${JSON.stringify(id)})`);
+		this.activeId = id;
+		this.present();
+	}
+
+	/** Take out a tab whose note is gone, without saving it. */
+	async removeTab(id: string): Promise<void> {
+		await this.exec(`window.floatNote.remove(${JSON.stringify(id)})`);
+	}
+
+	/** Offer a change made outside the panel. False when the tab has unpolled edits. */
+	async replace(id: string, text: string): Promise<boolean> {
+		return (await this.exec<boolean>(`window.floatNote.replace(${JSON.stringify(id)}, ${JSON.stringify(text)})`)) === true;
 	}
 
 	async toggleMode(): Promise<void> {
 		await this.exec('window.floatNote.toggleMode()');
 	}
 
-	async showView(srcdoc: string): Promise<void> {
-		await this.exec(`window.floatNote.showView(${JSON.stringify(srcdoc)})`);
+	async showView(id: string, srcdoc: string): Promise<void> {
+		await this.exec(`window.floatNote.showView(${JSON.stringify(id)}, ${JSON.stringify(srcdoc)})`);
 	}
 
-	async setName(name: string): Promise<void> {
-		await this.exec(`window.floatNote.setName(${JSON.stringify(name)})`);
+	async setName(id: string, name: string): Promise<void> {
+		await this.exec(`window.floatNote.setName(${JSON.stringify(id)}, ${JSON.stringify(name)})`);
 	}
 
 	/**
-	 * Stop polling and return any edits not yet reported. Waits for a poll
-	 * already in flight first, so nothing it took is lost between the two.
+	 * Stop polling and report any edits and closed tabs not yet reported.
+	 * Waits for a poll already in flight first, so nothing it took is lost
+	 * between the two.
 	 */
-	async drain(): Promise<string | null> {
+	async drain(): Promise<void> {
 		this.stopPolling();
 		if (this.inflight) await this.inflight;
 		const result = await this.exec<PollResult>('window.floatNote.poll()');
-		return result?.text ?? null;
+		if (result) this.reportText(result);
 	}
 
 	setOpacity(opacity: number): void {
@@ -219,8 +236,11 @@ export class FloatPanel {
 		if (this.inflight) return;
 		this.inflight = (async () => {
 			const result = await this.exec<PollResult>('window.floatNote.poll()');
-			if (result?.text != null) this.events.onText(result.text);
-			if (result) this.mode = result.mode;
+			if (result) {
+				this.reportText(result);
+				this.activeId = result.active;
+				this.mode = result.mode;
+			}
 			if (result?.viewDiagnostics) this.log('view-diagnostics', result.viewDiagnostics);
 			if (result?.viewRequested) this.events.onViewRequested();
 			if (result?.close) this.events.onCloseRequested(result.close);
@@ -229,6 +249,11 @@ export class FloatPanel {
 		})().finally(() => {
 			this.inflight = null;
 		});
+	}
+
+	private reportText(result: PollResult): void {
+		for (const { id, text } of result.texts) this.events.onText(id, text);
+		for (const { id, text } of result.closed) this.events.onTabClosed(id, text);
 	}
 
 	/** Moving or resizing fires nothing the plugin can hear without a remote listener, so it is polled too. */
@@ -258,9 +283,11 @@ export class FloatPanel {
 		for (const ms of REAPPLY_DELAYS_MS) this.timers.push(window.setTimeout(() => this.applyFlags(), ms));
 	}
 
-	private async load(content: PanelContent, theme: Theme): Promise<void> {
-		const args: LoadArgs = { ...content, theme };
-		await this.exec(`window.floatNote.load(${JSON.stringify(args)})`);
+	private async addTab(content: TabContent, theme: Theme): Promise<void> {
+		const args: OpenArgs = { ...content, theme };
+		await this.exec(`window.floatNote.open(${JSON.stringify(args)})`);
+		this.activeId = content.id;
+		this.mode = 'edit';
 	}
 
 	/** Run code in the page. Null if the window is gone or the call fails. */
@@ -367,15 +394,23 @@ function renderPage(): string {
 :root { --fn-background: #1e1e1e; --fn-text: #dcddde; --fn-muted: #999; --fn-border: #333; --fn-font: system-ui, sans-serif; --fn-size: 16px; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: var(--fn-background); color: var(--fn-text); }
 body { display: flex; flex-direction: column; font-family: var(--fn-font); }
-.bar { -webkit-app-region: drag; flex: none; height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 3px 0 10px; font-size: 11px; color: var(--fn-muted); border-bottom: 1px solid var(--fn-border); user-select: none; }
-#fn-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#fn-close { -webkit-app-region: no-drag; border: 0; background: transparent; color: var(--fn-muted); font-size: 15px; line-height: 1; width: 20px; height: 20px; border-radius: 4px; cursor: pointer; }
-#fn-close:hover { background: var(--fn-border); color: var(--fn-text); }
+.bar { -webkit-app-region: drag; flex: none; height: 26px; display: flex; align-items: center; gap: 4px; padding: 0 3px; font-size: 11px; color: var(--fn-muted); border-bottom: 1px solid var(--fn-border); user-select: none; }
+#fn-tabs { flex: 0 1 auto; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+/* Always some strip left to drag the window by, however many tabs. */
+.fn-drag { flex: 1 0 16px; align-self: stretch; }
+.fn-tab { -webkit-app-region: no-drag; flex: 0 1 140px; min-width: 64px; height: 20px; box-sizing: border-box; display: flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; border-radius: 4px; cursor: default; }
+.fn-tab:hover { color: var(--fn-text); }
+.fn-tab.is-active, .fn-tab.is-dragging { background: var(--fn-border); color: var(--fn-text); }
+.fn-tab.is-dragging { position: relative; z-index: 1; opacity: 0.85; transform: translateX(var(--fn-shift, 0)); }
+.fn-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fn-tab-close { flex: none; border: 0; background: transparent; color: var(--fn-muted); font-size: 14px; line-height: 1; width: 16px; height: 16px; padding: 0; border-radius: 3px; cursor: pointer; }
+.fn-tab-close:hover { background: rgba(127, 127, 127, 0.3); color: var(--fn-text); }
 #fn-mode { -webkit-app-region: no-drag; border: 0; background: transparent; color: var(--fn-muted); font: inherit; font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
-#fn-mode:hover, #fn-close:hover { background: var(--fn-border); color: var(--fn-text); }
+#fn-mode:hover { background: var(--fn-border); color: var(--fn-text); }
 #fn-editor { flex: 1; min-height: 0; }
 #fn-view { flex: 1; min-height: 0; border: 0; width: 100%; background: var(--fn-background); }
 </style></head>
-<body><div class="bar"><span id="fn-name"></span><button id="fn-mode" title="Show as Obsidian renders it (Cmd+E)">View</button><button id="fn-close" title="Close (Esc)">×</button></div><div id="fn-editor"></div><iframe id="fn-view" style="display: none" title="Rendered note"></iframe>
+<body><div class="bar"><div id="fn-tabs"></div><div class="fn-drag"></div><button id="fn-mode" title="Show as Obsidian renders it (Cmd+E)">View</button></div>
+<template id="fn-tab-template"><div class="fn-tab"><span class="fn-tab-name"></span><button class="fn-tab-close" title="Close tab (Cmd+W)">×</button></div></template><div id="fn-editor"></div><iframe id="fn-view" style="display: none" title="Rendered note"></iframe>
 <script>${script}</script></body></html>`;
 }

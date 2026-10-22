@@ -1,36 +1,20 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile } from 'obsidian';
 import type { Bounds } from './native';
 import { FloatPanel, sweepOrphanPanels, writePanelPage } from './panel';
+import { Notes } from './notes';
 import { DEFAULT_SETTINGS, FloatNoteSettings, FloatNoteSettingTab } from './settings';
 import { buildViewDocument } from './view';
-
-/**
- * How long the panel must be idle before its text is written. Every write is
- * a file change the Obsidian Linter reacts to by rewriting the file, so writes
- * wait for a pause in typing rather than landing on every poll.
- */
-const WRITE_IDLE_MS = 800;
 
 /** How long after the last move or resize the panel's bounds are saved. */
 const BOUNDS_SAVE_MS = 1000;
 
-/** The note the panel is editing, and what the plugin knows about it. */
-interface Binding {
-	file: TFile;
-	/** The text disk and panel last agreed on. */
-	lastWritten: string;
-	/** Panel text not yet written. */
-	pending: string | null;
-	changedAt: number;
-}
-
 export default class FloatNotePlugin extends Plugin {
 	settings!: FloatNoteSettings;
 	panel: FloatPanel | null = null;
-	private binding: Binding | null = null;
+	/** The notes open in the panel's tabs. */
+	private readonly notes = new Notes(this.app);
 	private pagePath = '';
 	private busy = false;
-	private writes: Promise<void> = Promise.resolve();
 	private boundsTimer: number | null = null;
 
 	async onload() {
@@ -79,14 +63,21 @@ export default class FloatNotePlugin extends Plugin {
 		this.registerEvent(this.app.vault.on('modify', (file) => this.onVaultModify(file)));
 		this.registerEvent(
 			this.app.vault.on('rename', (file) => {
-				if (this.panel && file instanceof TFile && file === this.binding?.file) void this.panel.setName(file.basename);
+				const b = this.notes.byFile(file);
+				if (this.panel && b && file instanceof TFile) void this.panel.setName(b.id, file.basename);
 			}),
 		);
 		this.registerEvent(
 			this.app.vault.on('delete', (file) => {
-				if (file !== this.binding?.file) return;
+				const b = this.notes.byFile(file);
+				if (!b) return;
+				this.notes.discard(b.id);
+				if (this.notes.size > 0) {
+					new Notice('Float Note: a floating note was deleted, so its tab was closed.');
+					void this.panel?.removeTab(b.id);
+					return;
+				}
 				new Notice('Float Note: the floating note was deleted, so the panel was closed.');
-				if (this.binding) this.binding.pending = null;
 				this.closePanelNow();
 			}),
 		);
@@ -128,33 +119,47 @@ export default class FloatNotePlugin extends Plugin {
 		if (this.busy) return;
 		this.busy = true;
 		try {
+			// Already floating: show its tab rather than open a second.
+			const open = this.notes.byFile(file);
+			if (this.panel?.isAlive() && open) {
+				await this.panel.activate(open.id);
+				this.log('tab-activated', { path: file.path });
+				return;
+			}
 			if (this.panel?.isAlive()) {
-				await this.saveNow();
 				const text = await this.app.vault.read(file);
-				this.binding = { file, lastWritten: text, pending: null, changedAt: 0 };
-				await this.panel.show({ name: file.basename, text });
-				this.log('panel-retargeted', { path: file.path });
+				const b = this.notes.add(file, text);
+				await this.panel.openTab({ id: b.id, name: file.basename, text });
+				this.log('tab-opened', { path: file.path });
 				return;
 			}
 			this.closePanelNow();
 			sweepOrphanPanels();
 			if (!this.pagePath) this.pagePath = await writePanelPage(this.app.vault.adapter, `${this.manifest.dir}/panel.html`);
 			const text = await this.app.vault.read(file);
-			this.binding = { file, lastWritten: text, pending: null, changedAt: 0 };
+			const b = this.notes.add(file, text);
 			this.panel = await FloatPanel.open(
 				this.pagePath,
-				{ name: file.basename, text },
+				{ id: b.id, name: file.basename, text },
 				() => this.settings,
 				(event, extra) => this.log(event, extra),
 				{
-					onText: (changed) => this.onPanelText(changed),
+					onText: (id, changed) => this.notes.edited(id, changed),
+					onTabClosed: (id, changed) => {
+						if (changed !== null) this.notes.edited(id, changed);
+						this.log('tab-closed', { path: this.notes.get(id)?.file.path });
+						void this.notes.remove(id);
+						// The page closes its last tab through onCloseRequested; this catches
+						// one emptied by a note deleted while this close was on its way.
+						if (this.notes.size === 0) void this.closePanel();
+					},
 					onCloseRequested: (source) => {
 						this.log('close-requested', { source });
 						void this.closePanel();
 					},
 					onViewRequested: () => void this.renderView(),
 					onBounds: (bounds) => this.rememberBounds(bounds),
-					onTick: () => this.writeIfIdle(),
+					onTick: () => this.notes.writeIdle(),
 				},
 			);
 			this.log('panel-opened', { path: file.path });
@@ -173,9 +178,8 @@ export default class FloatNotePlugin extends Plugin {
 		if (!panel?.isAlive()) return this.floatCurrentNote();
 		if (panel.isVisible()) {
 			// Saved now rather than left to the idle timer, so nothing waits on a window nobody can see.
-			const text = await panel.drain();
-			if (text !== null) this.onPanelText(text);
-			await this.saveNow();
+			await panel.drain();
+			await this.notes.save();
 			panel.resumePolling();
 			panel.hide();
 		} else {
@@ -192,75 +196,41 @@ export default class FloatNotePlugin extends Plugin {
 		}, BOUNDS_SAVE_MS);
 	}
 
-	/** Save what the panel holds, then close it. The path every close from the panel or palette takes. */
+	/** Save every tab, then close the panel. The path every close from the panel or palette takes. */
 	async closePanel(): Promise<void> {
 		const panel = this.panel;
 		if (!panel) return;
 		this.panel = null;
-		const text = await panel.drain();
-		if (text !== null) this.onPanelText(text);
-		await this.saveNow();
+		await panel.drain();
+		await this.notes.save();
 		panel.close();
-		this.binding = null;
+		this.notes.clear();
 	}
 
 	/**
-	 * Close without waiting, for unload paths that cannot await. A pending
-	 * write is started but may not finish - up to about a second of typing.
+	 * Close without waiting, for unload paths that cannot await. Pending
+	 * writes are started but may not finish - up to about a second of typing.
 	 */
 	closePanelNow(): void {
-		const b = this.binding;
-		if (b?.pending != null && b.pending !== b.lastWritten) {
-			void this.app.vault.modify(b.file, b.pending);
-		}
+		this.notes.flushNow();
 		this.panel?.close();
 		this.panel = null;
-		this.binding = null;
-	}
-
-	private onPanelText(text: string): void {
-		if (!this.binding) return;
-		this.binding.pending = text;
-		this.binding.changedAt = Date.now();
-	}
-
-	private writeIfIdle(): void {
-		const b = this.binding;
-		if (b?.pending != null && Date.now() - b.changedAt >= WRITE_IDLE_MS) void this.saveNow();
-	}
-
-	/** Write pending panel text. Writes are chained so two never overlap. */
-	private saveNow(): Promise<void> {
-		this.writes = this.writes.then(async () => {
-			const b = this.binding;
-			if (!b || b.pending === null) return;
-			const text = b.pending;
-			b.pending = null;
-			if (text === b.lastWritten) return;
-			b.lastWritten = text;
-			try {
-				await this.app.vault.modify(b.file, text);
-			} catch (e) {
-				console.error('Float Note: could not save the note', e);
-				new Notice('Float Note: could not save the floating note. See the console.');
-			}
-		});
-		return this.writes;
+		this.notes.clear();
 	}
 
 	/**
-	 * Render the panel's text - pending edits included, so View shows what was
-	 * just typed - with Obsidian's renderer, and show it in the panel.
+	 * Render the active tab's text - pending edits included, so View shows what
+	 * was just typed - with Obsidian's renderer, and show it in the panel.
 	 */
 	private async renderView(): Promise<void> {
-		const b = this.binding;
 		const panel = this.panel;
+		const b = panel?.activeId ? this.notes.get(panel.activeId) : undefined;
 		if (!b || !panel) return;
 		const started = Date.now();
 		try {
 			const view = await buildViewDocument(this.app, b.file, b.pending ?? b.lastWritten, this.settings.debugLog ? `${this.manifest.dir}/last-view.html` : null);
-			if (this.binding !== b || this.panel !== panel) return;
-			await panel.showView(view.srcdoc);
+			if (!this.notes.has(b) || this.panel !== panel) return;
+			await panel.showView(b.id, view.srcdoc);
 			this.log('view-rendered', { ms: Date.now() - started, htmlBytes: view.htmlBytes, cssBytes: view.cssBytes, imagesRewritten: view.imagesRewritten });
 		} catch (e) {
 			console.error('Float Note: could not render the view', e);
@@ -270,17 +240,19 @@ export default class FloatNotePlugin extends Plugin {
 
 	/** A change from outside the panel - the main pane, the Linter, sync. */
 	private onVaultModify(file: TAbstractFile): void {
-		const b = this.binding;
-		if (!this.panel || !b || file !== b.file) return;
+		const panel = this.panel;
+		const b = this.notes.byFile(file);
+		if (!panel || !b) return;
 		// Panel edits not yet saved win; the next save overwrites the change.
 		if (b.pending !== null) return;
 		void (async () => {
 			const text = await this.app.vault.read(b.file);
-			if (text === b.lastWritten || this.binding !== b || !this.panel) return;
-			const applied = await this.panel.replace(text);
+			if (text === b.lastWritten || !this.notes.has(b) || this.panel !== panel) return;
+			const applied = await panel.replace(b.id, text);
 			if (applied) b.lastWritten = text;
 			this.log('external-change', { applied });
-			if (applied && this.panel.mode === 'view') await this.renderView();
+			// A tab in the background is rendered when it next shows.
+			if (applied && panel.activeId === b.id && panel.mode === 'view') await this.renderView();
 		})();
 	}
 
@@ -292,6 +264,7 @@ export default class FloatNotePlugin extends Plugin {
 				at: new Date().toISOString(),
 				event,
 				...extra,
+				tabs: this.notes.size,
 				window: this.panel?.snapshot() ?? null,
 			});
 			this.app.vault.adapter
