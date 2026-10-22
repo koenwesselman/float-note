@@ -14,6 +14,7 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirro
 import { syntaxHighlighting } from '@codemirror/language';
 import { frontmatter } from './frontmatter';
 import { livePreview } from './live-preview';
+import { cellSetup } from './live-preview/cell-editor';
 import { setRenderedLanguages } from './live-preview/fences';
 import { linkClicks, setUnresolved, takeOpenRequest, unresolvedField } from './live-preview/links';
 import type { LinkTarget, OpenRequest } from './live-preview/links';
@@ -133,6 +134,8 @@ function createState(id: string, text: string, editing: EditingMode, unresolved:
 			unresolvedField.init(() => new Set(unresolved)),
 			linkClicks,
 			preview.of(editing === 'live' ? livePreview : sourceMode),
+			// A table cell's editor: the note's syntax and Live Preview, in the note's tab.
+			cellSetup.of([noteId.of(id), markdownSyntax(), syntaxHighlighting(highlight), reveal, unresolvedField.init(() => new Set(unresolved)), linkClicks, livePreview]),
 			// Esc, Cmd+W, Cmd+E and tab switching are onKey's, in Edit and View alike.
 			keymap.of([
 				...historyKeymap,

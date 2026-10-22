@@ -48,7 +48,7 @@ The panel edits the way Obsidian does. Each tab opens in your **Default editing 
 **Live Preview** shows the note rendered, with its Markdown visible only where the cursor is. Headings, bold, italic, highlights, code, links, lists, quotes, callouts, tables and horizontal rules show as they will look. Move the cursor into one and its Markdown appears so you can edit it. When the panel does not have focus, the whole note shows rendered.
 
 - Select a checkbox to tick a task off. It is saved like any other edit.
-- Select a table to edit its Markdown.
+- Select a table cell to edit its text in place. **Tab** and **Shift+Tab** move between cells, **Enter** and the arrow keys between rows. Moving the cursor into a table from above or below shows its Markdown instead.
 - Math, images, embeds, Mermaid diagrams and code blocks that other plugins draw, such as Dataview queries, are rendered by Obsidian and shown in the panel. They can take a moment to appear.
 
 **Source** shows the note's Markdown, with headings, bold, italic, code, links, quotes and frontmatter styled in your theme's colours.
@@ -57,7 +57,7 @@ In either mode, what you type is saved to the vault after a short pause. Changes
 
 **View** shows the note as Obsidian renders it, with callouts, tables, images and your theme. It is read-only: checkboxes do nothing there.
 
-In all three, **Cmd+click** a link to open it. A note opens in a new tab in Obsidian's main window, and a web link in your browser.
+In all three, **Cmd+click** a link to open it. A note opens in the panel, in a tab of its own, and a web link in your browser. A link to a note that does not exist yet, or to another kind of file such as a PDF, opens in Obsidian's main window.
 
 ## Settings
 
