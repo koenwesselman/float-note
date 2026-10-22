@@ -10,40 +10,66 @@ export interface CalloutStyle {
 	icon: string;
 }
 
-export interface Theme {
-	background: string;
-	text: string;
-	muted: string;
-	accent: string;
+/** Text and token styles, measured separately for Source and Live Preview: themes can style them differently. */
+export interface TokenStyle {
+	font: string;
+	size: string;
 	link: string;
 	bold: string;
 	italic: string;
 	quote: string;
 	quoteStyle: string;
-	/** h1 to h6, colour and size each. */
+	/** h1 to h6, colour, size and font each. */
 	headingColours: string[];
 	headingSizes: string[];
+	headingFonts: string[];
+}
+
+/** The top strip, styled as Obsidian's tab bar. */
+export interface StripStyle {
+	background: string;
+	border: string;
+	text: string;
+	activeBackground: string;
+	activeText: string;
+	hover: string;
+	radius: string;
+	font: string;
+	fontSize: string;
+	icon: string;
+	/** Obsidian's icons as SVG markup, or '' where it has none. */
+	icons: { close: string; reading: string; editing: string };
+}
+
+export interface Theme {
+	background: string;
+	text: string;
+	muted: string;
+	accent: string;
+	source: TokenStyle;
+	livePreview: TokenStyle;
 	yamlKey: string;
 	border: string;
 	selection: string;
+	caret: string;
 	codeBackground: string;
-	font: string;
 	monospace: string;
-	size: string;
 	highlight: string;
 	tagColour: string;
 	tagBackground: string;
 	unresolvedColour: string;
 	unresolvedOpacity: string;
-	listMarker: string;
 	doneColour: string;
 	doneDecoration: string;
 	quoteBorder: string;
 	quoteBorderWidth: string;
 	rule: string;
 	tableBorder: string;
+	scrollbarThumb: string;
+	scrollbarActiveThumb: string;
 	/** By callout type, plus `default` for types the theme does not know. */
 	callouts: Record<string, CalloutStyle>;
+	strip: StripStyle;
 }
 
 let callouts: Record<string, CalloutStyle> = {};
@@ -60,6 +86,7 @@ export const highlight = HighlightStyle.define([
 		tag,
 		fontSize: `var(--fn-h${i + 1}-size)`,
 		color: `var(--fn-h${i + 1}-colour)`,
+		fontFamily: `var(--fn-h${i + 1}-font)`,
 		fontWeight: '700',
 	})),
 	{ tag: t.strong, fontWeight: '700', color: 'var(--fn-bold)' },
@@ -78,9 +105,10 @@ export const highlight = HighlightStyle.define([
 export const editorTheme = EditorView.theme({
 	'&': { height: '100%', backgroundColor: 'var(--fn-background)', color: 'var(--fn-text)', fontSize: 'var(--fn-size)' },
 	'&.cm-focused': { outline: 'none' },
-	'.cm-scroller': { fontFamily: 'var(--fn-font)', lineHeight: '1.5', padding: '8px 0' },
-	'.cm-content': { padding: '0 14px', caretColor: 'var(--fn-text)' },
-	'.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--fn-text)' },
+	// The side margin is the scroller's: Obsidian's CSS, once it arrives, sets the content's padding to 0.
+	'.cm-scroller': { fontFamily: 'var(--fn-font)', lineHeight: '1.5', padding: '8px 14px' },
+	'.cm-content': { padding: '0', caretColor: 'var(--fn-caret)' },
+	'.cm-cursor, .cm-dropCursor': { borderLeftColor: 'var(--fn-caret)' },
 	'.fn-frontmatter': { fontFamily: 'var(--fn-monospace)', fontSize: '0.85em' },
 	'&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection': {
 		backgroundColor: 'var(--fn-selection)',
@@ -90,7 +118,6 @@ export const editorTheme = EditorView.theme({
 	'.fn-link': { color: 'var(--fn-link)', textDecoration: 'underline', textUnderlineOffset: '2px' },
 	'.fn-unresolved': { color: 'var(--fn-unresolved-colour)', opacity: 'var(--fn-unresolved-opacity)' },
 	'.fn-quote': { borderLeft: 'var(--fn-quote-border-width) solid var(--fn-quote-border)', paddingLeft: '12px' },
-	'.fn-bullet': { color: 'var(--fn-list-marker)' },
 	'.fn-checkbox': {
 		display: 'inline-block',
 		position: 'relative',
@@ -135,7 +162,31 @@ export const editorTheme = EditorView.theme({
 	'.fn-rendered-pending, .fn-rendered-failed': { color: 'var(--fn-muted)', fontFamily: 'var(--fn-monospace)', fontSize: '0.9em', whiteSpace: 'pre-wrap' },
 });
 
-/** Obsidian's theme as CSS variables on the page, for the styles above and the page's own. */
+/** A mode's text and token styles as the variables the styles above read. */
+function tokenVars(t: TokenStyle): Record<string, string> {
+	const vars: Record<string, string> = {
+		'--fn-font': t.font,
+		'--fn-size': t.size,
+		'--fn-link': t.link,
+		'--fn-bold': t.bold,
+		'--fn-italic': t.italic,
+		'--fn-quote': t.quote,
+		'--fn-quote-style': t.quoteStyle,
+	};
+	t.headingColours.forEach((colour, i) => (vars[`--fn-h${i + 1}-colour`] = colour));
+	t.headingSizes.forEach((size, i) => (vars[`--fn-h${i + 1}-size`] = size));
+	t.headingFonts.forEach((font, i) => (vars[`--fn-h${i + 1}-font`] = font));
+	return vars;
+}
+
+/** Live Preview's own token styles, as overrides on its editor. A stylesheet, so they follow the class wherever it is. */
+let livePreviewSheet: CSSStyleSheet | null = null;
+
+/**
+ * Obsidian's theme as CSS variables on the page, for the styles above and
+ * the page's own. Source's token styles go on the root; Live Preview's
+ * override them on its editor. Called again whenever the theme changes.
+ */
 export function applyTheme(theme: Theme): void {
 	const root = document.documentElement.style;
 	const vars: Record<string, string> = {
@@ -143,33 +194,43 @@ export function applyTheme(theme: Theme): void {
 		'--fn-text': theme.text,
 		'--fn-muted': theme.muted,
 		'--fn-accent': theme.accent,
-		'--fn-link': theme.link,
-		'--fn-bold': theme.bold,
-		'--fn-italic': theme.italic,
-		'--fn-quote': theme.quote,
-		'--fn-quote-style': theme.quoteStyle,
 		'--fn-yaml-key': theme.yamlKey,
 		'--fn-border': theme.border,
 		'--fn-selection': theme.selection,
+		'--fn-caret': theme.caret,
 		'--fn-code-background': theme.codeBackground,
-		'--fn-font': theme.font,
 		'--fn-monospace': theme.monospace,
-		'--fn-size': theme.size,
 		'--fn-highlight': theme.highlight,
 		'--fn-tag-colour': theme.tagColour,
 		'--fn-tag-background': theme.tagBackground,
 		'--fn-unresolved-colour': theme.unresolvedColour,
 		'--fn-unresolved-opacity': theme.unresolvedOpacity,
-		'--fn-list-marker': theme.listMarker,
 		'--fn-done-colour': theme.doneColour,
 		'--fn-done-decoration': theme.doneDecoration,
 		'--fn-quote-border': theme.quoteBorder,
 		'--fn-quote-border-width': theme.quoteBorderWidth,
 		'--fn-rule': theme.rule,
 		'--fn-table-border': theme.tableBorder,
+		'--fn-scrollbar-thumb': theme.scrollbarThumb,
+		'--fn-scrollbar-active-thumb': theme.scrollbarActiveThumb,
+		'--fn-strip-background': theme.strip.background,
+		'--fn-strip-border': theme.strip.border,
+		'--fn-strip-text': theme.strip.text,
+		'--fn-strip-active-background': theme.strip.activeBackground,
+		'--fn-strip-active-text': theme.strip.activeText,
+		'--fn-strip-hover': theme.strip.hover,
+		'--fn-strip-radius': theme.strip.radius,
+		'--fn-strip-font': theme.strip.font,
+		'--fn-strip-font-size': theme.strip.fontSize,
+		'--fn-strip-icon': theme.strip.icon,
+		...tokenVars(theme.source),
 	};
-	theme.headingColours.forEach((colour, i) => (vars[`--fn-h${i + 1}-colour`] = colour));
-	theme.headingSizes.forEach((size, i) => (vars[`--fn-h${i + 1}-size`] = size));
 	for (const [name, value] of Object.entries(vars)) root.setProperty(name, value);
+	if (!livePreviewSheet) {
+		livePreviewSheet = new CSSStyleSheet();
+		document.adoptedStyleSheets = [...document.adoptedStyleSheets, livePreviewSheet];
+	}
+	const overrides = Object.entries(tokenVars(theme.livePreview)).map(([name, value]) => `${name}: ${value};`);
+	livePreviewSheet.replaceSync(`.cm-editor.fn-live-preview { ${overrides.join(' ')} }`);
 	callouts = theme.callouts;
 }

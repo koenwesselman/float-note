@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, TAbstractFile, TFile } from 'obsidian';
+import { Notice, Platform, Plugin, TAbstractFile, TFile, debounce } from 'obsidian';
 import { readEditingMode } from './editing-mode';
 import { linkedNote, openLink, renderedLanguages, unresolvedLinks } from './links';
 import type { Bounds } from './native';
@@ -11,6 +11,9 @@ import { buildViewDocument } from './view';
 
 /** How long after the last move or resize the panel's bounds are saved. */
 const BOUNDS_SAVE_MS = 1000;
+
+/** How long Obsidian's CSS must stay unchanged before the panel's theme is read again. */
+const THEME_DEBOUNCE_MS = 200;
 
 export default class FloatNotePlugin extends Plugin {
 	settings!: FloatNoteSettings;
@@ -75,6 +78,11 @@ export default class FloatNotePlugin extends Plugin {
 		});
 
 		this.registerEvent(this.app.vault.on('modify', (file) => this.onVaultModify(file)));
+		// Theme, snippets, light or dark, accent colour: the panel restyles to match. One switch can fire this several times.
+		const themeChanged = debounce(() => void this.panel?.refreshTheme(), THEME_DEBOUNCE_MS, true);
+		this.registerEvent(this.app.workspace.on('css-change', themeChanged));
+		// Zooming the main window resizes its page, which is the only sign of it.
+		this.registerDomEvent(window, 'resize', debounce(() => this.panel?.followZoom(), THEME_DEBOUNCE_MS, true));
 		// Live Preview dims links to notes that do not exist; which those are changes as notes are saved and indexed.
 		this.registerEvent(
 			this.app.metadataCache.on('resolve', (file) => {

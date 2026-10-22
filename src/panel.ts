@@ -1,8 +1,9 @@
 import { DataAdapter, FileSystemAdapter } from 'obsidian';
 import editorScript from 'virtual:panel-editor';
-import { Bounds, NativeWindow, createWindow, isAlive, onSomeDisplay, safe, windowsTitled } from './native';
+import { Bounds, NativeWindow, createWindow, isAlive, mainZoomFactor, onSomeDisplay, safe, windowsTitled } from './native';
 import type { CloseSource, EditingMode, Mode, OpenArgs, OpenRequest, PollResult, Rendered, RenderRequest, Stylesheet, Theme } from './panel-editor';
 import type { FloatNoteSettings } from './settings';
+import { cssFingerprint, shadowStylesheet } from './render';
 import { readTheme } from './theme';
 
 export type Log = (event: string, extra?: Record<string, unknown>) => void;
@@ -81,6 +82,9 @@ export class FloatPanel {
 	private lastBounds: Bounds | null = null;
 	/** Which main-window CSS the page last got for Live Preview's renderings. */
 	stylesheetFingerprint: string | null = null;
+	/** The theme the page last got, to tell whether a re-read found a change. */
+	private themeJson = '';
+	private zoom = 1;
 
 	private constructor(
 		private readonly native: NativeWindow,
@@ -128,7 +132,10 @@ export class FloatPanel {
 		panel.setOpacity(settings().opacity);
 		panel.lastBounds = safe(() => native.getBounds(), null);
 		await native.loadFile(pagePath);
+		panel.followZoom();
 		await panel.addTab(content, theme);
+		// Before the panel shows, so it does not appear unstyled and then restyle.
+		await panel.syncStylesheet();
 		panel.present();
 		panel.pollTimer = window.setInterval(() => panel.tick(), POLL_MS);
 		return panel;
@@ -140,8 +147,41 @@ export class FloatPanel {
 
 	/** Another note, in a new tab, shown. */
 	async openTab(content: TabContent): Promise<void> {
-		await this.addTab(content, readTheme());
+		const theme = readTheme();
+		await this.refreshTheme(theme);
+		await this.addTab(content, theme);
 		this.present();
+	}
+
+	/**
+	 * Read Obsidian's theme again and, if it changed, restyle the page and
+	 * the window behind it. Renderings made under the old theme are marked
+	 * for redrawing: the stylesheet goes again with the next ones. True when
+	 * the theme changed.
+	 */
+	async refreshTheme(theme: Theme = readTheme()): Promise<boolean> {
+		const json = JSON.stringify(theme);
+		if (json === this.themeJson) return false;
+		this.themeJson = json;
+		this.stylesheetFingerprint = null;
+		safe(() => this.native.setBackgroundColor(theme.background), undefined);
+		await this.exec(`window.floatNote.setTheme(${json})`);
+		await this.syncStylesheet();
+		this.log('theme-changed');
+		return true;
+	}
+
+	/**
+	 * Zoom the panel as Obsidian's main window is zoomed. Electron keeps zoom
+	 * per origin, and the panel's file:// page is not Obsidian's, so neither
+	 * window's zoom leaks into the other.
+	 */
+	followZoom(): void {
+		const factor = mainZoomFactor();
+		if (factor === this.zoom || !this.isAlive()) return;
+		this.zoom = factor;
+		safe(() => this.native.webContents.setZoomFactor(factor), undefined);
+		this.log('zoom-changed', { factor });
 	}
 
 	/** Show a tab already open. */
@@ -149,6 +189,8 @@ export class FloatPanel {
 		await this.exec(`window.floatNote.activate(${JSON.stringify(id)})`);
 		this.activeId = id;
 		this.present();
+		// Belt and braces: not every appearance setting may fire css-change.
+		await this.refreshTheme();
 	}
 
 	/** Take out a tab whose note is gone, without saving it. */
@@ -173,7 +215,16 @@ export class FloatPanel {
 		await this.exec(`window.floatNote.setRendered(${JSON.stringify(results)})`);
 	}
 
-	async setStylesheet(sheet: Stylesheet): Promise<void> {
+	/**
+	 * Send Obsidian's stylesheet, if the main window's CSS changed since the
+	 * page last got it: it styles the panel's editor, and Live Preview's
+	 * renderings.
+	 */
+	async syncStylesheet(): Promise<void> {
+		const fingerprint = cssFingerprint();
+		if (this.stylesheetFingerprint === fingerprint) return;
+		this.stylesheetFingerprint = fingerprint;
+		const sheet: Stylesheet = await shadowStylesheet();
 		await this.exec(`window.floatNote.setStylesheet(${JSON.stringify(sheet)})`);
 	}
 
@@ -219,6 +270,7 @@ export class FloatPanel {
 	unhide(): void {
 		this.present();
 		this.log('panel-shown');
+		void this.refreshTheme();
 	}
 
 	/** Destroy the window. Idempotent; does not save. */
@@ -313,6 +365,7 @@ export class FloatPanel {
 
 	private async addTab(content: TabContent, theme: Theme): Promise<void> {
 		const args: OpenArgs = { ...content, theme };
+		this.themeJson = JSON.stringify(theme);
 		await this.exec(`window.floatNote.open(${JSON.stringify(args)})`);
 		this.activeId = content.id;
 		this.mode = content.editingMode;
@@ -342,27 +395,8 @@ function renderPage(): string {
 	const script = editorScript.replace(/<\/script/gi, '<\\/script');
 	return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${PANEL_TITLE}</title>
-<style>
-:root { --fn-background: #1e1e1e; --fn-text: #dcddde; --fn-muted: #999; --fn-border: #333; --fn-font: system-ui, sans-serif; --fn-size: 16px; }
-html, body { margin: 0; height: 100%; overflow: hidden; background: var(--fn-background); color: var(--fn-text); }
-body { display: flex; flex-direction: column; font-family: var(--fn-font); }
-.bar { -webkit-app-region: drag; flex: none; height: 26px; display: flex; align-items: center; gap: 4px; padding: 0 3px; font-size: 11px; color: var(--fn-muted); border-bottom: 1px solid var(--fn-border); user-select: none; }
-#fn-tabs { flex: 0 1 auto; min-width: 0; display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
-/* Always some strip left to drag the window by, however many tabs. */
-.fn-drag { flex: 1 0 16px; align-self: stretch; }
-.fn-tab { -webkit-app-region: no-drag; flex: 0 1 140px; min-width: 64px; height: 20px; box-sizing: border-box; display: flex; align-items: center; gap: 2px; padding: 0 2px 0 8px; border-radius: 4px; cursor: default; }
-.fn-tab:hover { color: var(--fn-text); }
-.fn-tab.is-active, .fn-tab.is-dragging { background: var(--fn-border); color: var(--fn-text); }
-.fn-tab.is-dragging { position: relative; z-index: 1; opacity: 0.85; transform: translateX(var(--fn-shift, 0)); }
-.fn-tab-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fn-tab-close { flex: none; border: 0; background: transparent; color: var(--fn-muted); font-size: 14px; line-height: 1; width: 16px; height: 16px; padding: 0; border-radius: 3px; cursor: pointer; }
-.fn-tab-close:hover { background: rgba(127, 127, 127, 0.3); color: var(--fn-text); }
-#fn-mode { -webkit-app-region: no-drag; border: 0; background: transparent; color: var(--fn-muted); font: inherit; font-size: 11px; padding: 2px 6px; border-radius: 4px; cursor: pointer; }
-#fn-mode:hover { background: var(--fn-border); color: var(--fn-text); }
-#fn-editor { flex: 1; min-height: 0; }
-#fn-view { flex: 1; min-height: 0; border: 0; width: 100%; background: var(--fn-background); }
-</style></head>
-<body><div class="bar"><div id="fn-tabs"></div><div class="fn-drag"></div><button id="fn-mode" title="Show as Obsidian renders it (Cmd+E)">View</button></div>
-<template id="fn-tab-template"><div class="fn-tab"><span class="fn-tab-name"></span><button class="fn-tab-close" title="Close tab (Cmd+W)">×</button></div></template><div id="fn-editor"></div><iframe id="fn-view" style="display: none" title="Rendered note"></iframe>
+</head>
+<body><div class="bar"><div id="fn-tabs"></div><div class="fn-drag"></div><button id="fn-mode"></button></div>
+<template id="fn-tab-template"><div class="fn-tab"><span class="fn-tab-name"></span><button class="fn-tab-close" title="Close tab (Cmd+W)" aria-label="Close tab"></button></div></template><div id="fn-editor"></div><iframe id="fn-view" style="display: none" title="Rendered note"></iframe>
 <script>${script}</script></body></html>`;
 }

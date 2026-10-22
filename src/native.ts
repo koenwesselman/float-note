@@ -11,11 +11,12 @@ export interface NativeWindow {
 	hide(): void;
 	getBounds(): Bounds;
 	setOpacity(opacity: number): void;
+	setBackgroundColor(colour: string): void;
 	destroy(): void;
 	getTitle(): string;
 	loadURL(url: string): Promise<void>;
 	loadFile(path: string): Promise<void>;
-	readonly webContents: { executeJavaScript(code: string): Promise<unknown> };
+	readonly webContents: { executeJavaScript(code: string): Promise<unknown>; setZoomFactor(factor: number): void };
 	setFullScreenable(fullscreenable: boolean): void;
 	setVisibleOnAllWorkspaces(
 		visible: boolean,
@@ -57,6 +58,22 @@ function remote(): Remote | null {
 		return (nodeRequire?.('electron') as { remote?: Remote } | undefined)?.remote ?? null;
 	} catch {
 		return null;
+	}
+}
+
+/**
+ * The main window's zoom - Obsidian's Cmd+plus and Cmd+minus - as a factor.
+ * Read from this renderer's own webFrame, so it costs no call to the main
+ * process. 1 when it cannot be read.
+ */
+export function mainZoomFactor(): number {
+	try {
+		const nodeRequire = (window as unknown as { require?: (id: string) => unknown }).require;
+		const electron = nodeRequire?.('electron') as { webFrame?: { getZoomFactor(): number } } | undefined;
+		const factor = electron?.webFrame?.getZoomFactor();
+		return typeof factor === 'number' && factor > 0 ? factor : 1;
+	} catch {
+		return 1;
 	}
 }
 

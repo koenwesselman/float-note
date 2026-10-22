@@ -19,15 +19,17 @@ import { setRenderedLanguages } from './live-preview/fences';
 import { linkClicks, setUnresolved, takeOpenRequest, unresolvedField } from './live-preview/links';
 import type { LinkTarget, OpenRequest } from './live-preview/links';
 import { noteId } from './live-preview/note';
-import { clearRendered, notifyRendered, setStylesheet, storeRendered, takeRenderRequests } from './live-preview/render';
+import { clearRendered, invalidateRendered, notifyRendered, setStylesheet, storeRendered, takeRenderRequests } from './live-preview/render';
 import type { Rendered, RenderRequest, Stylesheet } from './live-preview/render';
 import { reveal, syncFocus } from './live-preview/reveal';
 import { frame, watchFrame } from './reading';
 import { markdownSyntax } from './syntax';
+import { drawModeButton, setIcons } from './chrome';
+import { applyObsidianCss, setWrapper } from './obsidian-css';
 import { TabBar } from './tabs';
 import { Theme, applyTheme, editorTheme, highlight } from './theme';
 
-export type { CalloutStyle, Theme } from './theme';
+export type { CalloutStyle, StripStyle, Theme, TokenStyle } from './theme';
 export type { LinkTarget, OpenRequest, Rendered, RenderRequest, Stylesheet };
 
 /** How a tab is edited: Obsidian's Source mode or Live Preview. */
@@ -160,6 +162,7 @@ const bar = new TabBar(document.getElementById('fn-tabs') ?? document.body, {
 });
 
 const editorEl = document.getElementById('fn-editor');
+if (editorEl) setWrapper(editorEl, true);
 
 /** Which tab's rendering the frame holds. */
 let frameTab: Tab | null = null;
@@ -228,11 +231,7 @@ function removeTab(tab: Tab): void {
 /** Put the active tab's mode on screen, and focus it. */
 function showMode(): void {
 	const mode = active?.mode ?? 'live';
-	const button = document.getElementById('fn-mode');
-	if (button) {
-		button.textContent = mode === 'view' ? 'Edit' : 'View';
-		button.title = mode === 'view' ? 'Back to editing (Cmd+E)' : 'Show as Obsidian renders it (Cmd+E)';
-	}
+	drawModeButton(mode);
 	if (editorEl) editorEl.style.display = mode === 'view' ? 'none' : '';
 	if (frame) frame.style.display = mode === 'view' ? '' : 'none';
 	if (mode !== 'view') {
@@ -253,6 +252,7 @@ function showMode(): void {
 
 /** Put the active tab's editor in Live Preview or Source. */
 function setEditingMode(next: EditingMode): void {
+	if (editorEl) setWrapper(editorEl, next === 'live');
 	const wanted = next === 'live' ? livePreview : sourceMode;
 	if (preview.get(view.state) !== wanted) view.dispatch({ effects: preview.reconfigure(wanted) });
 }
@@ -301,6 +301,7 @@ const api = {
 	/** A note in a new tab at the end, shown at once. Its own state, so undo history stays with its note. */
 	open(args: OpenArgs): void {
 		applyTheme(args.theme);
+		setIcons(args.theme.strip.icons, args.editingMode);
 		setRenderedLanguages(args.renderedLanguages);
 		closeRequested = null;
 		const state = createState(args.id, args.text, args.editingMode, args.unresolved);
@@ -394,14 +395,37 @@ const api = {
 		return true;
 	},
 
+	/**
+	 * Obsidian's theme changed. The editor and strip follow at once, through
+	 * their variables; renderings made under the old theme are redrawn - View
+	 * for the tab showing it now, the others' when they next show.
+	 */
+	setTheme(theme: Theme): void {
+		applyTheme(theme);
+		setIcons(theme.strip.icons, active?.mode ?? 'live');
+		for (const tab of tabs.values()) {
+			if (tab === active && tab.mode === 'view') continue;
+			tab.srcdoc = null;
+			if (frameTab === tab) frameTab = null;
+		}
+		if (active?.mode === 'view') viewRequested = true;
+		invalidateRendered();
+		// Also redraws callouts, whose colours and icons are in their decorations.
+		notifyRendered(view);
+	},
+
 	/** Obsidian's renderings of blocks Live Preview asked for. */
 	setRendered(results: Rendered[]): void {
 		storeRendered(results);
 		notifyRendered(view);
 	},
 
-	/** Obsidian's stylesheet, for those renderings. Sent before the first of them. */
-	setStylesheet,
+	/** Obsidian's stylesheet, for the editor and for those renderings. Sent on opening, and again when the theme changes. */
+	setStylesheet(sheet: Stylesheet): void {
+		applyObsidianCss(setStylesheet(sheet), sheet.bodyClass, sheet.bodyStyle);
+		// List indents use the marker widths just measured.
+		notifyRendered(view);
+	},
 
 	/** Link paths in a tab's note that resolve to nothing, after Obsidian re-indexed it. */
 	setUnresolved(id: string, list: string[]): void {

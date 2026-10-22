@@ -1,16 +1,35 @@
 import { EditorView, WidgetType } from '@codemirror/view';
+import { listMarker } from '../obsidian-css';
 import { calloutStyle } from '../theme';
 import { el } from '../dom';
 
-export class BulletWidget extends WidgetType {
-	eq(): boolean {
-		return true;
+/**
+ * A list item's indentation and marker, as Obsidian's Live Preview draws
+ * them: an indentation guide per level, and a bullet or number. Obsidian's
+ * CSS styles both.
+ */
+export class ListPrefixWidget extends WidgetType {
+	constructor(
+		private readonly kind: 'ul' | 'ol',
+		private readonly marker: string,
+		private readonly level: number,
+		private readonly indents: number,
+	) {
+		super();
+	}
+
+	eq(other: ListPrefixWidget): boolean {
+		return other.kind === this.kind && other.marker === this.marker && other.level === this.level && other.indents === this.indents;
 	}
 
 	toDOM(): HTMLElement {
-		const bullet = el('span', 'fn-bullet');
-		bullet.textContent = '•';
-		return bullet;
+		const prefix = el('span');
+		if (this.indents > 0) {
+			const indent = prefix.appendChild(el('span', `cm-hmd-list-indent cm-hmd-list-indent-${this.indents}`));
+			for (let i = 0; i < this.indents; i++) indent.appendChild(el('span', 'cm-indent')).textContent = '\t';
+		}
+		prefix.append(listMarker(this.kind, this.marker, this.level));
+		return prefix;
 	}
 }
 

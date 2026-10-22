@@ -31,6 +31,10 @@ export const renderedEffect = StateEffect.define<null>();
 
 const cache = new Map<string, string | null>();
 const requested = new Set<string>();
+/** Renderings made under an earlier theme: still shown, but asked for again when next drawn. */
+const stale = new Set<string>();
+/** Bumped by invalidateRendered, so widgets redraw - and re-ask - even with the same rendering. */
+let generation = 0;
 let queue: RenderRequest[] = [];
 
 export function takeRenderRequests(): RenderRequest[] {
@@ -43,7 +47,18 @@ export function storeRendered(results: readonly Rendered[]): void {
 	for (const { key, html } of results) {
 		cache.set(key, html);
 		requested.delete(key);
+		stale.delete(key);
 	}
+}
+
+/**
+ * The theme changed: what Obsidian drew under the old one - Mermaid's colours
+ * are baked into its SVG - is redrawn. Renderings stay on screen until their
+ * replacements arrive, so nothing flickers back to source.
+ */
+export function invalidateRendered(): void {
+	for (const key of cache.keys()) stale.add(key);
+	generation++;
 }
 
 /** A closed tab's renderings, which nothing will show again. */
@@ -51,6 +66,7 @@ export function clearRendered(tab: string): void {
 	const prefix = `${tab}\n`;
 	for (const key of [...cache.keys()]) if (key.startsWith(prefix)) cache.delete(key);
 	for (const key of [...requested]) if (key.startsWith(prefix)) requested.delete(key);
+	for (const key of [...stale]) if (key.startsWith(prefix)) stale.delete(key);
 	queue = queue.filter((r) => r.tab !== tab);
 }
 
@@ -83,11 +99,16 @@ export interface Stylesheet {
 	css: string;
 	/** The main window's body classes - theme-dark and the like - which Obsidian's selectors expect. */
 	bodyClass: string;
+	/** The main window's body inline style, which holds the accent colour. */
+	bodyStyle: string;
 }
 
-export function setStylesheet(sheet: Stylesheet): void {
-	adoptable().obsidian.replaceSync(sheet.css);
+/** Take Obsidian's stylesheet, and return it as a sheet the page can adopt too. */
+export function setStylesheet(sheet: Stylesheet): CSSStyleSheet {
+	const { obsidian } = adoptable();
+	obsidian.replaceSync(sheet.css);
 	bodyClass = sheet.bodyClass;
+	return obsidian;
 }
 
 /** Cmd+click on a link in a rendering opens it; a plain click on one does nothing, as it would navigate the panel. */
@@ -113,6 +134,7 @@ export class RenderedWidget extends WidgetType {
 	private readonly tab: string;
 	private readonly key: string;
 	private readonly html: string | null | undefined;
+	private readonly generation = generation;
 
 	constructor(
 		state: EditorState,
@@ -126,7 +148,7 @@ export class RenderedWidget extends WidgetType {
 	}
 
 	eq(other: RenderedWidget): boolean {
-		return other.key === this.key && other.html === this.html;
+		return other.key === this.key && other.html === this.html && other.generation === this.generation;
 	}
 
 	toDOM(): HTMLElement {
@@ -137,6 +159,7 @@ export class RenderedWidget extends WidgetType {
 			if (this.html === undefined) this.request();
 			return host;
 		}
+		if (stale.has(this.key)) this.request();
 		const shadow = host.attachShadow({ mode: 'open' });
 		const { obsidian, overrides } = adoptable();
 		shadow.adoptedStyleSheets = [obsidian, overrides];
