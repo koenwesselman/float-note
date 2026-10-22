@@ -2,6 +2,7 @@ import { syntaxTree } from '@codemirror/language';
 import type { EditorState, Extension } from '@codemirror/state';
 import { DecorationSet, EditorView, ViewPlugin, ViewUpdate } from '@codemirror/view';
 import { blocks } from './blocks';
+import { cellTracking } from './cell-editor';
 import { Builder } from './builder';
 import { decorateInline } from './inline';
 import { decorateLines } from './lines';
@@ -58,4 +59,4 @@ const decorations = ViewPlugin.fromClass(
  *
  * A constant, so the compartment's current content can be compared with it.
  */
-export const livePreview: Extension = [EditorView.editorAttributes.of({ class: 'fn-live-preview' }), decorations, blocks];
+export const livePreview: Extension = [EditorView.editorAttributes.of({ class: 'fn-live-preview' }), decorations, blocks, cellTracking];

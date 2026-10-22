@@ -3,6 +3,7 @@ import type { EditorState } from '@codemirror/state';
 import { EditorView, WidgetType } from '@codemirror/view';
 import type { SyntaxNode } from '@lezer/common';
 import { el } from '../dom';
+import { keepWhileEditing, stopEditing, watchTable } from './cell-editor';
 
 type Align = 'left' | 'center' | 'right' | null;
 
@@ -56,9 +57,75 @@ function alignments(row: string): Align[] {
 		});
 }
 
+/** One cell: its text, trimmed, or where text goes in an empty cell; and its node, which an empty cell has none of. */
+export interface Cell {
+	from: number;
+	to: number;
+	node: SyntaxNode | null;
+}
+
+export interface Row {
+	header: boolean;
+	cells: Cell[];
+	/** Where the row ends, and whether with a `|`: for adding cells to a short row. */
+	end: number;
+	closed: boolean;
+}
+
+/** The table node starting on the line at `pos`. */
+export function tableAt(state: EditorState, pos: number): SyntaxNode | null {
+	let found: SyntaxNode | null = null;
+	syntaxTree(state).iterate({
+		from: pos,
+		to: state.doc.lineAt(pos).to,
+		enter(ref) {
+			if (found) return false;
+			if (ref.name === 'Table') found = ref.node;
+			return undefined;
+		},
+	});
+	return found;
+}
+
 /**
- * A GFM table, drawn by the panel itself. Clicking it puts the cursor in
- * it, which shows the source for editing.
+ * A table's rows and cells, from the `|` between them. The parser makes a
+ * node only for a cell with text in it, so cells are counted from the
+ * delimiters; leading and trailing pipes are optional, as in GFM.
+ */
+export function tableRows(state: EditorState, table: SyntaxNode): Row[] {
+	const rows: Row[] = [];
+	for (let row = table.firstChild; row; row = row.nextSibling) {
+		if (row.name !== 'TableHeader' && row.name !== 'TableRow') continue;
+		const pipes = row.getChildren('TableDelimiter');
+		const nodes = row.getChildren('TableCell');
+		const bounds = [row.from, ...pipes.flatMap((p) => [p.from, p.to]), row.to];
+		const cells: Cell[] = [];
+		for (let i = 0; i < bounds.length; i += 2) {
+			const from = bounds[i] ?? row.from;
+			const to = bounds[i + 1] ?? row.to;
+			const first = i === 0;
+			const last = i === bounds.length - 2;
+			// Before a leading pipe, or after a trailing one: not a cell.
+			if ((first && pipes[0]?.from === row.from) || (last && pipes[pipes.length - 1]?.to === row.to)) continue;
+			const node = nodes.find((n) => n.from >= from && n.to <= to) ?? null;
+			if (node) {
+				cells.push({ from: node.from, to: node.to, node });
+			} else {
+				// Text typed into an empty cell goes after one space, so `|  |` becomes `| x |`.
+				const at = Math.min(from + 1, to);
+				cells.push({ from: at, to: at, node: null });
+			}
+		}
+		const last = pipes[pipes.length - 1];
+		rows.push({ header: row.name === 'TableHeader', cells, end: row.to, closed: last?.to === row.to });
+	}
+	return rows;
+}
+
+/**
+ * A GFM table, drawn by the panel itself. Clicking a cell edits it in
+ * place, as in Obsidian; the table's source shows only when the cursor
+ * moves into the table from outside.
  */
 export class TableWidget extends WidgetType {
 	constructor(
@@ -75,34 +142,48 @@ export class TableWidget extends WidgetType {
 
 	toDOM(view: EditorView): HTMLElement {
 		const table = el('table', 'fn-table');
-		const node = syntaxTree(view.state).resolveInner(this.from, 1);
-		let tableNode: SyntaxNode | null = node;
-		while (tableNode && tableNode.name !== 'Table') tableNode = tableNode.parent;
-		if (!tableNode) {
+		const node = tableAt(view.state, this.from);
+		if (!node) {
 			table.textContent = this.source;
 			return table;
 		}
-		const delimiterLine = view.state.doc.lineAt(tableNode.from).number + 1;
+		const delimiterLine = view.state.doc.lineAt(node.from).number + 1;
 		const align = delimiterLine <= view.state.doc.lines ? alignments(view.state.doc.line(delimiterLine).text) : [];
-		let columns = 0;
-		for (let row = tableNode.firstChild; row; row = row.nextSibling) {
-			if (row.name !== 'TableHeader' && row.name !== 'TableRow') continue;
-			const header = row.name === 'TableHeader';
-			const tr = (header ? table.createTHead() : (table.tBodies[0] ?? table.createTBody())).insertRow();
-			const cells = row.getChildren('TableCell');
-			if (header) columns = cells.length;
-			for (let i = 0; i < Math.max(columns, cells.length); i++) {
-				const cell = tr.appendChild(el(header ? 'th' : 'td'));
-				const a = align[i];
+		const rows = tableRows(view.state, node);
+		// As in GFM, the header row sets how many columns there are.
+		const columns = rows[0]?.cells.length ?? 0;
+		rows.forEach((row, r) => {
+			const tr = (row.header ? table.createTHead() : (table.tBodies[0] ?? table.createTBody())).insertRow();
+			for (let c = 0; c < columns; c++) {
+				const cell = tr.appendChild(el(row.header ? 'th' : 'td'));
+				cell.dataset.row = String(r);
+				cell.dataset.col = String(c);
+				const a = align[c];
 				if (a) cell.style.textAlign = a;
-				const source = cells[i];
-				if (source) renderInline(view.state, source, source.from, source.to, cell);
+				drawCell(view.state, row.cells[c], cell);
 			}
-		}
+		});
+		watchTable(view, table);
 		return table;
 	}
 
-	ignoreEvent(): boolean {
-		return false;
+	/** While a cell is being edited, the table stays as it is: redrawing it would take the cell's editor away. */
+	updateDOM(dom: HTMLElement, view: EditorView): boolean {
+		return keepWhileEditing(dom, view);
 	}
+
+	destroy(dom: HTMLElement): void {
+		stopEditing(dom);
+	}
+
+	/** The table handles its own clicks: they edit cells. */
+	ignoreEvent(): boolean {
+		return true;
+	}
+}
+
+/** A cell's text, drawn from the note. */
+export function drawCell(state: EditorState, cell: Cell | undefined, dom: HTMLElement): void {
+	dom.replaceChildren();
+	if (cell?.node) renderInline(state, cell.node, cell.from, cell.to, dom);
 }
